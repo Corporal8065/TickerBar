@@ -1419,6 +1419,7 @@ void MainComponent::applyTheme() {
     for (auto& c : cells_) c->repaint();
     if (fngCell_) fngCell_->repaint();
     if (domCell_) domCell_->repaint();
+    resized(); // the mascot cell (Anime) and cell softening depend on the theme
     repaint();
 }
 void MainComponent::applyChrome() {
