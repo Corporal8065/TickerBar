@@ -4,6 +4,33 @@ Verification rule (Jackson, 2026-10-29): every item is DONE only with
 proof — the full core suite green after the change, new checks for new
 behaviour, and errors recorded here with their actual text, never hidden.
 
+## Landed on main 2026-10-29 (post-v0.3.0, unreleased — Vishona's first request, via #crypto-book)
+
+- **Context cells: hide/show + adjustable width.** Fear & Greed and
+  BTC dominance were fixed 112 px chrome, always shown. Now:
+  Settings gains a "Context cells" panel with a show/hide toggle
+  per cell (`showFearGreed` / `showBtcDominance` in state,
+  persisted; both default ON, so an upgraded bar looks unchanged),
+  and each visible cell gets a draggable divider on its inner
+  side — the same CellSplitter + `adjustPairWidths` machinery as
+  the coin cells — storing a per-cell extent (`fngCellWidth` /
+  `domCellWidth`, 0 = the default 112 px / 66 px row) that
+  persists in settings.json and rides presets (shared
+  toVar/fromVar). One divider pairs the last coin cell with the
+  nearest context cell, the other pairs the two context cells;
+  the coin side keeps its solver floor. Hidden cells take no
+  space in either orientation, and `minimumBarWidth()` counts
+  only visible context cells at their effective widths. In
+  vertical mode the stored width doubles as the row height,
+  exactly like the coin cells' widths.
+- Proof: core suite 426 → 437 checks, 0 failures (11 new checks
+  pin the new state defaults, the context extent
+  defaults/clamps in `contextCellExtent`, and the pair-drag math
+  at the context floor). The JUCE app layer cannot be compiled on
+  this VM — its proof is the push's GitHub Actions Windows build,
+  as with prior rounds. NO version bump and NO tag: Jackson ships
+  the release himself after his field test.
+
 ## v0.2.1 (2026-10-29, later the same night — Jackson's follow-up: TickerBar gets a working release)
 
 - **Missing-release root cause found and fixed.** The v0.2.0

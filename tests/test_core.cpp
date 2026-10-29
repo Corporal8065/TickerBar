@@ -748,6 +748,29 @@ int main() {
         CHECK((int)BackgroundStyle::Pastel == 3);
         CHECK(d.windowH == 96);
     }
+    // ---------- post-v0.3.0: context cells (Vishona's request) ----------
+    {
+        TickerState d;
+        CHECK(d.showFearGreed && d.showBtcDominance); // both shown by default
+        CHECK(d.fngCellWidth == 0 && d.domCellWidth == 0); // 0 = default extent
+        // defaults are the pre-request fixed chrome sizes
+        CHECK(contextCellExtent(0, false) == 112);
+        CHECK(contextCellExtent(0, true) == 66);
+        // a dragged-in width is honoured in both orientations
+        CHECK(contextCellExtent(200, false) == 200);
+        CHECK(contextCellExtent(200, true) == 200);
+        // clamps: below the drag floor and above the cap
+        CHECK(contextCellExtent(10, false) == kContextCellMin);
+        CHECK(contextCellExtent(9999, false) == kContextCellMax);
+        // negative stored values count as unset
+        CHECK(contextCellExtent(-5, false) == 112);
+        // the pair-drag math the context dividers use: the pair
+        // total is preserved and neither side crosses the floor
+        auto cp = adjustPairWidths(112, 112, 40, kContextCellMin);
+        CHECK(cp.first == 152 && cp.second == 72);
+        auto cp2 = adjustPairWidths(112, 112, -500, kContextCellMin);
+        CHECK(cp2.first == kContextCellMin && cp2.second == 224 - kContextCellMin);
+    }
 
     std::printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

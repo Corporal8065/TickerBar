@@ -38,5 +38,16 @@ struct TickerState {
     int bgEffect = 0;               // background effect: 0 styled, 1 visualizer particles, 2 reactive glow
     float vizHue = 0.83f, vizSat = 0.85f, vizSpread = 0.75f, vizCycle = 24.f; // visualizer/glow palette
     std::map<std::string, int> cellWidths; // per-symbol explicit cell width px (absent = auto-share)
+    // Context cells (Fear & Greed / BTC dominance) — post-v0.3.0,
+    // Vishona's request: each cell can be hidden, and each carries
+    // its own explicit axis extent px (dragged via the divider
+    // beside the cell, persisted like the coin widths; 0 = the
+    // default extent from Layout.hpp). One value serves both
+    // orientations, exactly like cellWidths (width when horizontal,
+    // height when vertical).
+    bool showFearGreed = true;
+    bool showBtcDominance = true;
+    int fngCellWidth = 0;
+    int domCellWidth = 0;
 };
 } // namespace tickerbar

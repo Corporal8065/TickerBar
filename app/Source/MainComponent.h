@@ -99,6 +99,7 @@ private:
     void timerCallback() override;
     void rebuildCells();
     void rebuildSplitters();
+    void onContextSplitterDrag(bool coinsPair, int delta); // coinsPair: A (coins<->context); else B (FNG<->DOM)
     void refreshData();
     void refreshContext();
     void refreshStatus();
@@ -140,6 +141,11 @@ private:
     ClickSounds clicks_;
     std::vector<std::unique_ptr<CoinCell>> cells_;
     std::vector<std::unique_ptr<CellSplitter>> splitters_;
+    // Context-cell dividers (post-v0.3.0): A divides the coin block
+    // from the nearest visible context cell, B divides Fear & Greed
+    // from BTC dominance. Created once; resized() places them and
+    // drives their visibility from the show* toggles.
+    std::unique_ptr<CellSplitter> ctxSplitA_, ctxSplitB_;
     std::map<std::string, tickerbar::AlertTracker> trackers_;
     std::map<std::string, double> lastPrices_; // mascot tick triggers (item 18)
     std::unique_ptr<TickerSettingsWindow> settingsWin_;

@@ -49,6 +49,10 @@ inline juce::var toVar(const tickerbar::TickerState& s) {
     auto* widthsObj = new juce::DynamicObject();
     for (auto& kv : s.cellWidths) widthsObj->setProperty(juce::String(kv.first), kv.second);
     set("cellWidths", juce::var(widthsObj));
+    set("showFearGreed", s.showFearGreed);
+    set("showBtcDominance", s.showBtcDominance);
+    set("fngWidth", s.fngCellWidth);
+    set("domWidth", s.domCellWidth);
     return juce::var(o);
 }
 inline tickerbar::TickerState fromVar(const juce::var& v) {
@@ -106,6 +110,12 @@ inline tickerbar::TickerState fromVar(const juce::var& v) {
             if (w >= 40 && w <= 1200) s.cellWidths[prop.name.toString().toStdString()] = w;
         }
     }
+    s.showFearGreed = gb("showFearGreed", s.showFearGreed);
+    s.showBtcDominance = gb("showBtcDominance", s.showBtcDominance);
+    auto gw = [&](const char* k, int d){ auto x = g(k); if (x.isVoid()) return d;
+        const int w = (int)x; return (w == 0 || (w >= 40 && w <= 600)) ? w : d; };
+    s.fngCellWidth = gw("fngWidth", s.fngCellWidth);
+    s.domCellWidth = gw("domWidth", s.domCellWidth);
     return s;
 }
 inline tickerbar::TickerState load() {

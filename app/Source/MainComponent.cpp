@@ -557,6 +557,11 @@ public:
             y_ += 30;
             note("Any Coinbase USD pair, plus HYPE (served by CoinGecko). Validated against the live coin list.");
         });
+        panel("Context cells", [&]{
+            toggle("Show Fear & Greed cell", st->showFearGreed, [&](bool b){ st->showFearGreed = b; });
+            toggle("Show BTC dominance cell", st->showBtcDominance, [&](bool b){ st->showBtcDominance = b; });
+            note("The two market-context cells at the end of the bar (Vishona's request). Drag the divider beside a context cell to change its width - the width is remembered, like the coin cells.");
+        });
         panel("Alerts", [&]{
             toggle("Soft click sound on a cross (default off)", st->alertSound, [&](bool b){ st->alertSound = b; });
             toggle("Windows toast notification on a cross", st->alertToasts, [&](bool b){ st->alertToasts = b; });
@@ -822,6 +827,20 @@ MainComponent::MainComponent() {
     addAndMakeVisible(fngCell_.get());
     addAndMakeVisible(domCell_.get());
 
+    // Post-v0.3.0: dividers for the context cells — A between the
+    // coin block and the nearest visible context cell, B between
+    // Fear & Greed and BTC dominance. Same CellSplitter +
+    // adjustPairWidths machinery as the coin dividers; resized()
+    // places them and drives visibility from the show* toggles.
+    ctxSplitA_ = std::make_unique<CellSplitter>();
+    ctxSplitA_->owner = this;
+    ctxSplitA_->onDragDelta = [this](int, int delta) { onContextSplitterDrag(true, delta); };
+    addChildComponent(ctxSplitA_.get());
+    ctxSplitB_ = std::make_unique<CellSplitter>();
+    ctxSplitB_->owner = this;
+    ctxSplitB_->onDragDelta = [this](int, int delta) { onContextSplitterDrag(false, delta); };
+    addChildComponent(ctxSplitB_.get());
+
     mascot_ = std::make_unique<MascotView>();
     addChildComponent(mascot_.get()); // Anime theme only (applyTheme drives visibility)
     fxPump_.onTick = [this]{ stepFx(); };
@@ -883,6 +902,14 @@ void MainComponent::resized() {
     auto r = area.reduced(8, 6);
     const int n = (int)cells_.size();
     const bool anime = state.themeName == "Anime";
+    // Context-cell visibility (post-v0.3.0 toggles): hidden cells
+    // and their dividers take no space in either orientation.
+    const bool showF = state.showFearGreed && fngCell_ != nullptr;
+    const bool showD = state.showBtcDominance && domCell_ != nullptr;
+    if (fngCell_) fngCell_->setVisible(showF);
+    if (domCell_) domCell_->setVisible(showD);
+    if (ctxSplitA_) ctxSplitA_->setVisible((showF || showD) && n > 0);
+    if (ctxSplitB_) ctxSplitB_->setVisible(showF && showD);
     if (!vertical_) {
         // ---- horizontal: 30 px toolbar strip across the top ----
         auto strip = r.removeFromTop(30);
@@ -903,11 +930,27 @@ void MainComponent::resized() {
         r.removeFromTop(4);
         // ---- cells row ----
         if (anime && mascot_) { mascot_->setBounds(r.removeFromRight(72)); r.removeFromRight(6); }
-        if (domCell_ && fngCell_) {
-            domCell_->setBounds(r.removeFromRight(112));
-            r.removeFromRight(6);
-            fngCell_->setBounds(r.removeFromRight(112));
-            r.removeFromRight(6);
+        // Context cells at the right end (DOM outermost, then
+        // FNG), each visible one at its effective width with a
+        // draggable divider on its inner side — the coin-divider
+        // idiom (16 px boundary: 3 air + 10 grip + 3 air), placed
+        // right-to-left. A divides coins from the nearest context
+        // cell; B divides FNG from DOM.
+        auto ctxBoundary = [&](CellSplitter* sp) {
+            r.removeFromRight(3);
+            sp->verticalBar = false;
+            auto sb = r.removeFromRight(10);
+            sp->setBounds(sb.getX(), r.getY(), 10, r.getHeight());
+            r.removeFromRight(3);
+        };
+        if (showD) {
+            domCell_->setBounds(r.removeFromRight(tickerbar::contextCellExtent(state.domCellWidth, false)));
+            if (showF) ctxBoundary(ctxSplitB_.get());
+            else if (n > 0) ctxBoundary(ctxSplitA_.get());
+        }
+        if (showF) {
+            fngCell_->setBounds(r.removeFromRight(tickerbar::contextCellExtent(state.fngCellWidth, false)));
+            if (n > 0) ctxBoundary(ctxSplitA_.get());
         }
         if (n > 0) {
             const int boundary = 16; // 10 px splitter + 6 px air
@@ -953,13 +996,19 @@ void MainComponent::resized() {
             c->setBounds(r.getX(), r.getY(), r.getWidth(), h);
             r.removeFromTop(h);
         };
+        // Each visible context row reserves its divider boundary
+        // (16) + its effective height + the 6 px trailing gap from
+        // the coin solver's share of the stack.
+        const int fngH = tickerbar::contextCellExtent(state.fngCellWidth, true);
+        const int domH = tickerbar::contextCellExtent(state.domCellWidth, true);
+        const int ctxReserve = (showF ? 16 + fngH + 6 : 0) + (showD ? 16 + domH + 6 : 0);
         if (n > 0) {
             std::vector<int> expl((size_t)n, 0);
             for (int i = 0; i < n; ++i) {
                 auto it = state.cellWidths.find(cells_[(size_t)i]->symbol);
                 if (it != state.cellWidths.end()) expl[(size_t)i] = it->second;
             }
-            auto heights = tickerbar::solveCellWidths(r.getHeight() - 2 * 72, boundary, expl, 56);
+            auto heights = tickerbar::solveCellWidths(r.getHeight() - ctxReserve, boundary, expl, 56);
             for (int i = 0; i < n; ++i) {
                 placeRow(cells_[(size_t)i].get(), heights[(size_t)i]);
                 if (i + 1 < n && i < (int)splitters_.size()) {
@@ -969,8 +1018,18 @@ void MainComponent::resized() {
                 r.removeFromTop(boundary);
             }
         }
-        if (fngCell_) { placeRow(fngCell_.get(), 66); r.removeFromTop(6); }
-        if (domCell_) { placeRow(domCell_.get(), 66); r.removeFromTop(6); }
+        // Context rows under the coins, each visible one preceded
+        // by its divider (dragging it adjusts row heights — the
+        // stored width doubles as height, like the coin cells).
+        auto placeCtxRow = [&](ContextCell* cell, int h, CellSplitter* sp) {
+            sp->verticalBar = true;
+            sp->setBounds(r.getX(), r.getY() + 3, r.getWidth(), 10);
+            r.removeFromTop(16);
+            placeRow(cell, h);
+            r.removeFromTop(6);
+        };
+        if (showF) placeCtxRow(fngCell_.get(), fngH, ctxSplitA_.get());
+        if (showD) placeCtxRow(domCell_.get(), domH, showF ? ctxSplitB_.get() : ctxSplitA_.get());
         if (anime && mascot_) mascot_->setBounds(r.removeFromTop(96));
         if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
             w->setResizeLimits(200, 340, 1200, 3840);
@@ -1021,6 +1080,43 @@ void MainComponent::rebuildSplitters() {
         addAndMakeVisible(sp.get());
         splitters_.push_back(std::move(sp));
     }
+}
+
+// --- context-cell dividers (post-v0.3.0, Vishona's request). A
+// pairs the LAST coin cell with the nearest visible context cell
+// (Fear & Greed, or BTC dominance when Fear & Greed is hidden); B
+// pairs Fear & Greed with BTC dominance. Same pair math as the
+// coin dividers: the coin side persists into cellWidths, the
+// context side into the cell's own width field; both reflow via
+// resized(). The axis extent doubles as height in vertical mode,
+// exactly like the coin widths. ---
+void MainComponent::onContextSplitterDrag(bool coinsPair, int delta) {
+    if (coinsPair) {
+        const bool useFng = state.showFearGreed;
+        if (cells_.empty() || (!useFng && !state.showBtcDominance)) return;
+        auto* coin = cells_.back().get();
+        auto* ctx = useFng ? (juce::Component*)fngCell_.get() : (juce::Component*)domCell_.get();
+        const int w1 = vertical_ ? coin->getHeight() : coin->getWidth();
+        const int w2 = vertical_ ? ctx->getHeight() : ctx->getWidth();
+        auto pr = tickerbar::adjustPairWidths(w1, w2, delta, tickerbar::kContextCellMin);
+        const int coinMin = vertical_ ? 56 : 90; // the coin solver's floors, mirrored
+        if (pr.first < coinMin) { // the coin keeps its floor; the context cell absorbs the difference
+            pr.second -= coinMin - pr.first;
+            pr.first = coinMin;
+            if (pr.second < tickerbar::kContextCellMin) pr.second = tickerbar::kContextCellMin;
+        }
+        state.cellWidths[coin->symbol] = pr.first;
+        (useFng ? state.fngCellWidth : state.domCellWidth) = pr.second;
+    } else {
+        if (!state.showFearGreed || !state.showBtcDominance) return;
+        const int w1 = vertical_ ? fngCell_->getHeight() : fngCell_->getWidth();
+        const int w2 = vertical_ ? domCell_->getHeight() : domCell_->getWidth();
+        auto pr = tickerbar::adjustPairWidths(w1, w2, delta, tickerbar::kContextCellMin);
+        state.fngCellWidth = pr.first;
+        state.domCellWidth = pr.second;
+    }
+    saveSettings();
+    resized();
 }
 
 // --- cell drag arbitration (v0.3.0 item 9): the press decides by
@@ -1314,9 +1410,15 @@ int MainComponent::minimumBarWidth() const {
         cellsW += tickerbar::minCoinCellWidth(symW, pctWorst);
     }
     if (!state.watchlist.empty()) cellsW += 16 * ((int)state.watchlist.size() - 1); // splitter boundaries
+    // Context cells (post-v0.3.0): each VISIBLE one contributes
+    // its effective width plus its 16 px divider boundary; a
+    // hidden cell contributes nothing — the floor shrinks with it.
+    int ctxW = 0;
+    if (state.showFearGreed) ctxW += tickerbar::contextCellExtent(state.fngCellWidth, false) + 16;
+    if (state.showBtcDominance) ctxW += tickerbar::contextCellExtent(state.domCellWidth, false) + 16;
     const int chrome = 16 /*outer pad*/ + 24 /*status dot*/ + 92 + 44 + 70 /*wordmark + version + status*/
                      + 76 + 52 + 76 + 76 + 64 + 56 + 62 + 72 + 68 + 26 + 46 + 44 /*the v0.3.0 cluster + its gaps*/
-                     + 112 + 6 + 112 + 6;     /*context cells + gaps*/
+                     + ctxW;
     return chrome + cellsW;
 }
 

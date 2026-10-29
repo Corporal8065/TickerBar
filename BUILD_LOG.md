@@ -2,6 +2,15 @@
 
 # TickerBar — BUILD LOG
 
+## Post-v0.3.0 on main (2026-10-29) — Vishona's context-cell request (unreleased)
+
+Hide/show toggles (Settings > Context cells) plus draggable,
+persisted widths for the Fear & Greed and BTC dominance cells —
+they were fixed-width, always-on chrome before. Per-item record
+in REQUESTS.md. Core suite 426 → 437 checks, 0 failures; app
+layer proven by the push's Actions build. No version bump, no
+tag — Jackson releases after his field test.
+
 ## v0.3.0 (2026-10-29) — the parity round (MeterBar feature family + field fixes)
 
 Everything MeterBar had that this bar didn't, ported in one round,

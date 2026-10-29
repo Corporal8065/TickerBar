@@ -104,6 +104,26 @@ inline std::pair<int, int> adjustPairWidths(int w1, int w2, int delta, int minW)
     return { n1, sum - n1 };
 }
 
+// ------------------------------------------------------------------
+// CONTEXT CELLS (Fear & Greed / BTC dominance) — post-v0.3.0,
+// Vishona's request. Until now they were fixed chrome: 112 px wide
+// (horizontal) / 66 px rows (vertical), always shown. Now each has
+// a visibility toggle (TickerState) and a user-dragged explicit
+// extent stored per cell (0 = default), adjusted through the same
+// CellSplitter + adjustPairWidths machinery as the coin cells.
+inline constexpr int kContextCellDefaultW = 112; // the pre-request fixed width
+inline constexpr int kContextCellDefaultH = 66;  // the pre-request fixed row height
+inline constexpr int kContextCellMin = 64;       // drag floor: title + value stay legible
+inline constexpr int kContextCellMax = 600;
+
+// The effective axis extent (px) of a context cell: the stored
+// value when one was dragged in (clamped to the sane band), else
+// the orientation's historical default.
+inline int contextCellExtent(int stored, bool vertical) {
+    if (stored <= 0) return vertical ? kContextCellDefaultH : kContextCellDefaultW;
+    return stored < kContextCellMin ? kContextCellMin : (stored > kContextCellMax ? kContextCellMax : stored);
+}
+
 // Where a dragged cell would land: the count of sibling centres the
 // pointer has passed = the insertion slot (0..n) in the sibling list
 // WITHOUT the dragged cell.
