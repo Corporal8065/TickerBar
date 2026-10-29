@@ -41,6 +41,14 @@ inline juce::var toVar(const tickerbar::TickerState& s) {
     set("dockEdge", (int)s.dockEdge);
     set("winX", s.windowX); set("winY", s.windowY); set("winW", s.windowW); set("winH", s.windowH);
     set("pollSec", s.pollSec);
+    set("uiVer", s.uiVer);
+    set("clickSounds", s.clickSounds);
+    set("dataColorScheme", s.dataColorScheme);
+    set("bgEffect", s.bgEffect);
+    set("vizHue", s.vizHue); set("vizSat", s.vizSat); set("vizSpread", s.vizSpread); set("vizCycle", s.vizCycle);
+    auto* widthsObj = new juce::DynamicObject();
+    for (auto& kv : s.cellWidths) widthsObj->setProperty(juce::String(kv.first), kv.second);
+    set("cellWidths", juce::var(widthsObj));
     return juce::var(o);
 }
 inline tickerbar::TickerState fromVar(const juce::var& v) {
@@ -77,15 +85,27 @@ inline tickerbar::TickerState fromVar(const juce::var& v) {
     s.linkEnabled = gb("linkEnabled", s.linkEnabled);
     s.themeName = g("theme").toString().toStdString();
     if (s.themeName.empty()) s.themeName = "Midnight Kids";
-    s.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 2, gi("bgStyle", (int)s.backgroundStyle));
+    s.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 3, gi("bgStyle", (int)s.backgroundStyle));
     s.backgroundOpacity = juce::jlimit(0.15f, 1.0f, gf("bgOpacity", s.backgroundOpacity));
     s.pinned = gb("pinned", s.pinned);
     s.reserveScreenSpace = gb("reserveSpace", s.reserveScreenSpace);
     s.dockEdge = (tickerbar::DockEdge)juce::jlimit(0, 3, gi("dockEdge", (int)s.dockEdge));
     s.windowX = gi("winX", s.windowX); s.windowY = gi("winY", s.windowY);
-    s.windowW = juce::jlimit(420, 3840, gi("winW", s.windowW));
-    s.windowH = juce::jlimit(52, 300, gi("winH", s.windowH));
+    s.windowW = juce::jlimit(160, 3840, gi("winW", s.windowW));
+    s.windowH = juce::jlimit(52, 1200, gi("winH", s.windowH));
     s.pollSec = juce::jlimit(5, 300, gi("pollSec", s.pollSec));
+    s.uiVer = gi("uiVer", 0); // files written before v0.3.0 carry no marker — the app migrates them once
+    s.clickSounds = gb("clickSounds", s.clickSounds);
+    s.dataColorScheme = juce::jlimit(0, 4, gi("dataColorScheme", s.dataColorScheme));
+    s.bgEffect = juce::jlimit(0, 2, gi("bgEffect", s.bgEffect));
+    s.vizHue = gf("vizHue", s.vizHue); s.vizSat = gf("vizSat", s.vizSat);
+    s.vizSpread = gf("vizSpread", s.vizSpread); s.vizCycle = gf("vizCycle", s.vizCycle);
+    if (auto* wObj = g("cellWidths").getDynamicObject()) {
+        for (auto& prop : wObj->getProperties()) {
+            const int w = (int)prop.value;
+            if (w >= 40 && w <= 1200) s.cellWidths[prop.name.toString().toStdString()] = w;
+        }
+    }
     return s;
 }
 inline tickerbar::TickerState load() {

@@ -1,6 +1,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
+#include <tickerbar/WindowGeom.hpp> // v0.3.0: startup position clamp (never restore off-screen)
 class MainWindow : public juce::DocumentWindow {
 public:
     explicit MainWindow(const juce::String& name) : juce::DocumentWindow(name, juce::Colour(0x00000000), 0) {
@@ -15,8 +16,20 @@ public:
         content = mc;
         setContentOwned(mc, true);
         setResizable(true, false);
-        setResizeLimits(mc->minimumBarWidth(), 56, 3840, 300);
-        setBounds(mc->state.windowX, mc->state.windowY, mc->state.windowW, mc->state.windowH);
+        setResizeLimits(mc->minimumBarWidth(), 92, 3840, 1200);
+        // v0.3.0: clamp the restored rect into a visible work area —
+        // a bar must never restore off-screen (SessionBar's field bug,
+        // fixed family-wide; the pure rule is core WindowGeom).
+        {
+            std::vector<tickerbar::IntRect> areas;
+            for (auto& d : juce::Desktop::getInstance().getDisplays().displays) {
+                auto ua = d.userArea;
+                areas.push_back({ ua.getX(), ua.getY(), ua.getWidth(), ua.getHeight() });
+            }
+            auto clamped = tickerbar::clampRectToWorkAreas(
+                { mc->state.windowX, mc->state.windowY, mc->state.windowW, mc->state.windowH }, areas);
+            setBounds(clamped.x, clamped.y, clamped.w, clamped.h);
+        }
         setAlwaysOnTop(mc->state.pinned);
         setVisible(true);
     }
@@ -35,7 +48,7 @@ private:
 class TickerBarApp : public juce::JUCEApplication {
 public:
     const juce::String getApplicationName() override { return "TickerBar"; }
-    const juce::String getApplicationVersion() override { return "0.2.1"; }
+    const juce::String getApplicationVersion() override { return "0.3.0"; }
     bool moreThanOneInstanceAllowed() override { return false; }
     void initialise(const juce::String&) override {
         // JUCE free-license attribution splash (MeterBar v0.15 pattern):

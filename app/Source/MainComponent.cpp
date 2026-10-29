@@ -2,11 +2,17 @@
 #include <tickerbar/Format.hpp>
 #include <tickerbar/Stale.hpp>
 #include <tickerbar/Layout.hpp>
+#include <tickerbar/ChartMath.hpp>
+#include <tickerbar/WindowGeom.hpp>
+#include <BinaryData.h>
 #include "SettingsStore.h"
+#include "PresetIO.h"
+#include "SettingsPalette.h"
 #if JUCE_WINDOWS
  #include <windows.h> // native rects for the AppBar sync (physical pixels)
 #endif
-static const char* kVersion = "v0.2.1";
+static const char* kVersion = "v0.3.0";
+static const char* kVersionNum = "0.3.0";
 static juce::String dockEdgeName(tickerbar::DockEdge e) {
     switch (e) {
         case tickerbar::DockEdge::Top: return "Top";
@@ -34,6 +40,87 @@ public:
 };
 
 // =====================================================================
+// MascotView — the Anime-theme mascot cell (v0.3.0, item 18): the
+// transparent-cutout character in her own cell at the END of the
+// strip, hidden entirely outside the Anime theme. Ported from
+// MeterBar's ModuleViews.h; the ARTWORK is MeterBar's own bundled
+// files (anime-mascot-calm-clear.png / anime-mascot-excited-clear.png,
+// byte-identical copies in this repo's assets/). MainComponent
+// drives `excited` and `bobPx` from TickerBar's own triggers: alert
+// crossings cheer, watched price ticks hop.
+// =====================================================================
+class MascotView : public juce::Component {
+public:
+    bool excited = false;
+    float bobPx = 0.f; // <= 0 (up) during a hop
+    MascotView() { setInterceptsMouseClicks(false, false); setOpaque(false); }
+    void paint(juce::Graphics& g) override {
+        ensureLoaded();
+        auto& img = excited ? imgExcited : imgCalm;
+        if (!img.isValid()) return;
+        auto b = getLocalBounds().toFloat();
+        float scale = std::min(b.getWidth() / (float)img.getWidth(), b.getHeight() / (float)img.getHeight());
+        float w = img.getWidth() * scale, h = img.getHeight() * scale;
+        float x = b.getCentreX() - w * 0.5f;
+        float y = b.getBottom() - h + bobPx;
+        g.setColour(juce::Colour(0x28000000));
+        g.fillEllipse(b.getCentreX() - w * 0.30f, b.getBottom() - 6.f, w * 0.60f, 5.f);
+        g.drawImage(img, x, y, w, h, 0, 0, img.getWidth(), img.getHeight());
+    }
+private:
+    juce::Image imgCalm, imgExcited; bool loaded = false;
+    void ensureLoaded() {
+        if (loaded) return; loaded = true;
+        imgCalm = juce::ImageFileFormat::loadFrom(BinaryData::animemascotcalmclear_png,
+                                                  (size_t)BinaryData::animemascotcalmclear_pngSize);
+        imgExcited = juce::ImageFileFormat::loadFrom(BinaryData::animemascotexcitedclear_png,
+                                                     (size_t)BinaryData::animemascotexcitedclear_pngSize);
+    }
+};
+
+// =====================================================================
+// CellSplitter — the draggable divider between two cells (v0.3.0,
+// item 10, MeterBar's ModuleSplitter pattern): a slim grab strip
+// with two grip dots; dragging reports the axis delta to the owner,
+// which adjusts the pair's widths through the core
+// (Layout.hpp adjustPairWidths) and persists them.
+// =====================================================================
+class CellSplitter : public juce::Component {
+public:
+    MainComponent* owner = nullptr;
+    int pairIndex = 0;      // divides cells pairIndex and pairIndex+1 (coin cells only)
+    bool verticalBar = false; // bar is in vertical orientation: the strip is horizontal, drag is dy
+    std::function<void(int, int)> onDragDelta; // (pairIndex, axis delta px)
+    CellSplitter() { setRepaintsOnMouseActivity(true); }
+    void paint(juce::Graphics& g) override {
+        const auto& th = owner->theme();
+        auto b = getLocalBounds().toFloat();
+        g.setColour(isMouseOver() ? th.accent : th.dim.withAlpha(0.6f));
+        const float cx = b.getCentreX(), cy = b.getCentreY();
+        if (verticalBar) {
+            g.fillEllipse(cx - 8.f, cy - 1.5f, 3.f, 3.f);
+            g.fillEllipse(cx + 5.f, cy - 1.5f, 3.f, 3.f);
+        } else {
+            g.fillEllipse(cx - 1.5f, cy - 8.f, 3.f, 3.f);
+            g.fillEllipse(cx - 1.5f, cy + 5.f, 3.f, 3.f);
+        }
+    }
+    void mouseDown(const juce::MouseEvent&) override {
+        lastPos_ = verticalBar ? getMouseXYRelative().getY() : getMouseXYRelative().getX();
+        setMouseCursor(verticalBar ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::LeftRightResizeCursor);
+    }
+    void mouseDrag(const juce::MouseEvent& e) override {
+        auto rel = e.getPosition();
+        const int pos = verticalBar ? rel.getY() : rel.getX();
+        const int delta = pos - lastPos_;
+        lastPos_ = pos;
+        if (delta != 0 && onDragDelta) onDragDelta(pairIndex, delta);
+    }
+private:
+    int lastPos_ = 0;
+};
+
+// =====================================================================
 // CoinCell — one watched coin: symbol, price, 24h % chip, sparkline.
 // A click opens the detail view; a drag moves the whole bar.
 // =====================================================================
@@ -53,9 +140,10 @@ public:
     bool flashing() const { return juce::Time::currentTimeMillis() < flashUntilMs; }
     void timerCallback() override { if (!flashing()) { stopTimer(); repaint(); } else repaint(); }
 
-    void mouseDown(const juce::MouseEvent& e) override { owner->windowDragStarted(e); }
-    void mouseDrag(const juce::MouseEvent& e) override { owner->windowDragged(e); }
+    void mouseDown(const juce::MouseEvent& e) override { owner->cellDragBegin(this, e); }
+    void mouseDrag(const juce::MouseEvent& e) override { owner->cellDragMove(this, e); }
     void mouseUp(const juce::MouseEvent& e) override {
+        if (owner->cellDragEnd(this, e)) return; // the gesture was a reorder
         if (e.getDistanceFromDragStart() < 5 && e.mouseWasClicked()) owner->openDetail(juce::String(symbol));
     }
 
@@ -63,7 +151,7 @@ public:
         const auto& th = owner->theme();
         auto b = getLocalBounds().toFloat().reduced(1.f);
         const float alpha = stale ? 0.55f : 1.0f;
-        g.setColour(th.panel.withAlpha(0.92f * alpha));
+        g.setColour(th.panel.withAlpha((owner->fxActive() ? 0.55f : 0.92f) * alpha));
         g.fillRoundedRectangle(b, 8.f);
         if (flashing()) {
             const bool phase = (juce::Time::currentTimeMillis() / 400) % 2 == 0;
@@ -90,7 +178,7 @@ public:
         g.drawText(juce::String(symbol), top.removeFromLeft((float)lay.symbolW), juce::Justification::centredLeft);
         top.removeFromLeft((float)lay.gap);
         if (pct) {
-            g.setColour((*pct >= 0 ? th.good : th.bad).withAlpha(alpha));
+            g.setColour(owner->gainColour(*pct >= 0).withAlpha(alpha));
             g.setFont(pctFont);
             g.drawText(pctText, top.removeFromLeft((float)lay.pctW), juce::Justification::centredRight);
         }
@@ -109,7 +197,7 @@ public:
         g.drawText(priceText, mid.removeFromLeft((float)lay2.symbolW), juce::Justification::centredLeft);
         mid.removeFromLeft((float)lay2.gap);
         if (pct1h) {
-            g.setColour((*pct1h >= 0 ? th.good : th.bad).withAlpha(alpha));
+            g.setColour(owner->gainColour(*pct1h >= 0).withAlpha(alpha));
             g.setFont(h1Font);
             g.drawText(h1Text, mid.removeFromLeft((float)lay2.pctW), juce::Justification::centredRight);
         }
@@ -126,7 +214,7 @@ public:
                 if (i == 0) p.startNewSubPath(x, y); else p.lineTo(x, y);
             }
             const bool up = pct && *pct >= 0;
-            auto lineCol = (up ? th.good : th.bad).withAlpha(0.9f * alpha);
+            auto lineCol = owner->gainColour(up).withAlpha(0.9f * alpha);
             juce::Path fill = p;
             fill.lineTo(area.getRight(), area.getBottom()); fill.lineTo(area.getX(), area.getBottom()); fill.closeSubPath();
             g.setColour(lineCol.withAlpha(0.16f)); g.fillPath(fill);
@@ -163,9 +251,10 @@ public:
         if (v == valueText && sub == subText && col == valueColour && isStale == stale && has) { repaint(); return; }
         valueText = v; subText = sub; valueColour = col; stale = isStale; has = true; repaint();
     }
-    void mouseDown(const juce::MouseEvent& e) override { owner->windowDragStarted(e); }
-    void mouseDrag(const juce::MouseEvent& e) override { owner->windowDragged(e); }
+    void mouseDown(const juce::MouseEvent& e) override { owner->cellDragBegin(this, e); }
+    void mouseDrag(const juce::MouseEvent& e) override { owner->cellDragMove(this, e); }
     void mouseUp(const juce::MouseEvent& e) override {
+        if (owner->cellDragEnd(this, e)) return;
         if (fngLink && e.getDistanceFromDragStart() < 5 && e.mouseWasClicked())
             juce::URL("https://alternative.me/crypto/fear-and-greed-index/").launchInDefaultBrowser();
     }
@@ -173,7 +262,7 @@ public:
         const auto& th = owner->theme();
         auto b = getLocalBounds().toFloat().reduced(1.f);
         const float alpha = stale ? 0.55f : 1.0f;
-        g.setColour(th.panel.withAlpha(0.92f * alpha));
+        g.setColour(th.panel.withAlpha((owner->fxActive() ? 0.55f : 0.92f) * alpha));
         g.fillRoundedRectangle(b, 8.f);
         g.setColour(th.border.withAlpha(alpha));
         g.drawRoundedRectangle(b, 8.f, 1.f);
@@ -314,6 +403,16 @@ public:
                 if (!(hi > lo)) { const double pad = std::max(1e-9, hi * 0.005); hi += pad; lo -= pad; }
                 const float step = priceArea.getWidth() / (float)candles.size();
                 const float bodyW = std::max(1.0f, step * 0.62f);
+                // v0.3.0 item 16: the 52-bar volume moving average +
+                // 3-sigma flags (core ChartMath). The pane scales to
+                // whichever is taller, the average or the tallest bar,
+                // so the line is always in frame.
+                std::vector<double> vols;
+                for (auto& c : candles) vols.push_back(c.volume);
+                auto vstats = tickerbar::volumeMaSd(vols);
+                double vMaxMa = 0.0;
+                for (auto& vp : vstats) vMaxMa = std::max(vMaxMa, vp.ma);
+                const double vScale = std::max(rangeInfo->maxVolume, vMaxMa);
                 auto yFor = [&](double px) {
                     return priceArea.getBottom() - (float)((px - lo) / (hi - lo)) * priceArea.getHeight();
                 };
@@ -327,11 +426,30 @@ public:
                     const float yO = yFor(c.open), yC = yFor(c.close);
                     const float top = std::min(yO, yC), hgt = std::max(1.f, std::abs(yC - yO));
                     g.fillRect(cx - bodyW / 2.f, top, bodyW, hgt);       // body (flat tick for closes-only)
-                    if (rangeInfo->hasVolume && rangeInfo->maxVolume > 0) {
-                        const float vh = (float)(c.volume / rangeInfo->maxVolume) * volArea.getHeight();
-                        g.setColour(col.withAlpha(0.55f));
+                    if (rangeInfo->hasVolume && vScale > 0) {
+                        const float vh = (float)(c.volume / vScale) * volArea.getHeight();
+                        const bool hot = i < vstats.size() && vstats[i].hot;
+                        // hot bars (volume >= 52-bar average + 3 sigma):
+                        // full-strength accent + a cap marker above.
+                        g.setColour(hot ? th.accent : col.withAlpha(0.55f));
                         g.fillRect(cx - bodyW / 2.f, volArea.getBottom() - vh, bodyW, vh);
+                        if (hot) g.fillRect(cx - bodyW / 2.f, volArea.getBottom() - vh - 3.f, bodyW, 2.f);
                     }
+                }
+                if (rangeInfo->hasVolume && vScale > 0) {
+                    // the 52-bar average line across the volume pane
+                    juce::Path maLine;
+                    bool started = false;
+                    for (size_t i = 0; i < vstats.size(); ++i) {
+                        const float cx = priceArea.getX() + step * ((float)i + 0.5f);
+                        const float y = volArea.getBottom() - (float)(vstats[i].ma / vScale) * volArea.getHeight();
+                        if (!started) { maLine.startNewSubPath(cx, y); started = true; } else maLine.lineTo(cx, y);
+                    }
+                    g.setColour(th.accent2.withAlpha(0.9f));
+                    g.strokePath(maLine, juce::PathStrokeType(1.2f));
+                    g.setColour(th.dim); g.setFont(9.f);
+                    g.drawText("volume: line = 52-bar average - pink cap = bar >= average + 3 sd",
+                               volArea.reduced(4.f, 0.f), juce::Justification::topLeft);
                 }
                 g.setColour(th.dim); g.setFont(9.5f);
                 g.drawText(juce::String(tickerbar::formatPrice(hi)), priceArea.reduced(4.f, 2.f), juce::Justification::topRight);
@@ -392,6 +510,7 @@ public:
     std::function<void()> onChanged;          // visual/window settings changed
     std::function<void()> onWatchlistChanged; // watchlist or alerts changed
     SettingsContent() { setSize(700, 620); }
+    void paint(juce::Graphics& g) override { g.fillAll(settingsPalette::base()); } // v0.3.0: the fixed pink-plum sheet
     void build() {
         removeAllChildren(); owned.clear(); y_ = 8;
         if (!owner || !st) return;
@@ -400,7 +519,7 @@ public:
             auto names = owner->universeNames();
             for (auto& sym : st->watchlist) {
                 auto* l = add(new juce::Label({}, juce::String(sym)));
-                l->setFont(juce::Font(13.5f, juce::Font::bold)); l->setColour(juce::Label::textColourId, th_.text);
+                l->setFont(juce::Font(13.5f, juce::Font::bold)); l->setColour(juce::Label::textColourId, settingsPalette::text());
                 l->setBounds(24, y_, 120, 22);
                 auto* rm = add(new juce::TextButton("Remove"));
                 rm->setBounds(150, y_, 90, 22);
@@ -414,14 +533,14 @@ public:
                 y_ += 26;
             }
             auto* ed = add(new juce::TextEditor());
-            ed->setColour(juce::TextEditor::backgroundColourId, th_.deepest);
-            ed->setColour(juce::TextEditor::textColourId, th_.text);
-            ed->setColour(juce::TextEditor::outlineColourId, th_.border);
+            ed->setColour(juce::TextEditor::backgroundColourId, settingsPalette::well());
+            ed->setColour(juce::TextEditor::textColourId, settingsPalette::text());
+            ed->setColour(juce::TextEditor::outlineColourId, settingsPalette::border());
             ed->setBounds(24, y_, 130, 24);
             auto* addBtn = add(new juce::TextButton("Add symbol"));
             addBtn->setBounds(162, y_, 110, 24);
             auto* err = add(new juce::Label({}, ""));
-            err->setFont(11.f); err->setColour(juce::Label::textColourId, th_.warn);
+            err->setFont(11.f); err->setColour(juce::Label::textColourId, juce::Colour(0xfffad927));
             err->setBounds(284, y_, 400, 24);
             addBtn->onClick = [this, ed, err, names]{
                 auto sym = ed->getText().trim().toUpperCase();
@@ -445,16 +564,16 @@ public:
             for (auto& sym : st->watchlist) {
                 auto lv = owner->levelsFor(sym);
                 auto* l = add(new juce::Label({}, juce::String(sym)));
-                l->setFont(juce::Font(12.5f, juce::Font::bold)); l->setColour(juce::Label::textColourId, th_.text);
+                l->setFont(juce::Font(12.5f, juce::Font::bold)); l->setColour(juce::Label::textColourId, settingsPalette::text());
                 l->setBounds(24, y_, 56, 22);
-                auto* lab = add(new juce::Label({}, "Above")); lab->setFont(11.f); lab->setColour(juce::Label::textColourId, th_.dim); lab->setBounds(84, y_, 40, 22);
+                auto* lab = add(new juce::Label({}, "Above")); lab->setFont(11.f); lab->setColour(juce::Label::textColourId, settingsPalette::dimText()); lab->setBounds(84, y_, 40, 22);
                 auto* ea = add(new juce::TextEditor());
-                auto* lb = add(new juce::Label({}, "Below")); lb->setFont(11.f); lb->setColour(juce::Label::textColourId, th_.dim); lb->setBounds(240, y_, 40, 22);
+                auto* lb = add(new juce::Label({}, "Below")); lb->setFont(11.f); lb->setColour(juce::Label::textColourId, settingsPalette::dimText()); lb->setBounds(240, y_, 40, 22);
                 auto* eb = add(new juce::TextEditor());
                 for (auto* e : { ea, eb }) {
-                    e->setColour(juce::TextEditor::backgroundColourId, th_.deepest);
-                    e->setColour(juce::TextEditor::textColourId, th_.text);
-                    e->setColour(juce::TextEditor::outlineColourId, th_.border);
+                    e->setColour(juce::TextEditor::backgroundColourId, settingsPalette::well());
+                    e->setColour(juce::TextEditor::textColourId, settingsPalette::text());
+                    e->setColour(juce::TextEditor::outlineColourId, settingsPalette::border());
                 }
                 ea->setBounds(126, y_, 104, 22); eb->setBounds(282, y_, 104, 22);
                 if (!std::isnan(lv.above)) ea->setText(juce::String(lv.above, 6), juce::dontSendNotification);
@@ -473,11 +592,31 @@ public:
             }
         });
         panel("Appearance", [&]{
-            combo("Background style", {"Clean Dark", "Midnight Kids", "Flat"}, (int)st->backgroundStyle,
+            combo("Theme", {"Midnight Kids", "Midnight Pink", "Deep Teal", "Daylight", "Anime", "Clean Dark"},
+                  juce::StringArray(themeNameList()).indexOf(juce::String(st->themeName)),
+                  [&](int v){
+                      auto names = themeNameList();
+                      st->themeName = names[juce::jlimit(0, names.size() - 1, v)].toStdString();
+                      if (st->themeName == "Anime") st->backgroundStyle = tickerbar::BackgroundStyle::Pastel; // MeterBar's pairing
+                  });
+            combo("Background style", {"Clean Dark", "Midnight Kids", "Flat", "Pastel"}, (int)st->backgroundStyle,
                   [&](int v){ st->backgroundStyle = (tickerbar::BackgroundStyle)v; });
             slider("Background opacity % (15-100)", 15.0, 100.0, st->backgroundOpacity * 100.0,
                    [&](double v){ st->backgroundOpacity = (float)(v / 100.0); });
-            note("Theme: Midnight Kids (MeterBar's palette family). Below 100% opacity the desktop shows through the bar's background.");
+            combo("Data colour scheme", {"Family", "Plasma", "Inferno", "Viridis", "Magma"}, st->dataColorScheme,
+                  [&](int v){ st->dataColorScheme = v; });
+            note("Data colours drive the gain/loss text and the sparklines. Family = the theme's own green/red; the others are pairs of stops from MeterBar's colour maps.");
+            combo("Background effect", {"Styled background", "Visualizer particles", "Reactive glow"}, st->bgEffect,
+                  [&](int v){ st->bgEffect = v; });
+            note("Visualizer: MeterBar's particle brushes (transient-fired emitters shedding strands of dots). Reactive glow: the MiniMeters-style blurred bloom - linked to MeterBar it pulses with the music; on its own it breathes gently. Both render UNDER the cells.");
+            slider("Effect palette hue", 0.0, 1.0, st->vizHue, [&](double v){ st->vizHue = (float)v; });
+            slider("Effect palette saturation", 0.0, 1.0, st->vizSat, [&](double v){ st->vizSat = (float)v; });
+            slider("Effect palette spread", 0.0, 1.0, st->vizSpread, [&](double v){ st->vizSpread = (float)v; });
+            slider("Effect cycle seconds (0 = static)", 0.0, 60.0, st->vizCycle, [&](double v){ st->vizCycle = (float)v; });
+        });
+        panel("Sound", [&]{
+            toggle("UI click sounds on the bar's buttons", st->clickSounds, [&](bool b){ st->clickSounds = b; });
+            note("MeterBar's synthesized clicks (pop / bloop / sparkle), played on button presses. Default off. The price-alert click above is separate.");
         });
         panel("Window", [&]{
             toggle("Always on top", st->pinned, [&](bool b){ st->pinned = b; });
@@ -493,10 +632,13 @@ public:
                   [&](int v){ st->pollSec = v == 0 ? 10 : v == 1 ? 20 : v == 2 ? 30 : 60; });
             buttonRow("Arrange windows clear of the bar", "Restore arranged windows",
                       [this]{ owner->doArrange(); }, [this]{ owner->doRestore(); });
+            button("Stack all linked bars as one block", [this]{ owner->doStackAll(); });
+            note("Stack is the one-click form of Link + Dock: it turns Link on, snaps this bar to its dock edge, and every other linked bar lines up flush against it. The Stack button on the bar does the same.");
             note("Arrange slides every other (non-maximised) window on the bar's monitor clear of the bar; Restore puts them back. Screen space: " + owner->screenSpaceStatus());
         });
         panel("About", [&]{
-            note("TickerBar v0.2.1 - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
+            button("Check for updates", [this]{ owner->checkForUpdates(); });
+            note("TickerBar v0.3.0 - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
             note("Detail chart: candlesticks + volume with 24h / 7d / 30d ranges. Coinbase caps one candles request at 300: 24h/7d are hourly, 30d is daily. CoinGecko (HYPE) supplies hourly closes only - no OHLC, no volume, no 30d - and the chart note says so.");
             note("Polls every N seconds (Window panel). If the feed drops, cells grey out and keep the last real prices, marked STALE - never fake-fresh numbers.");
             note("Context cells: Fear & Greed index (alternative.me) and BTC dominance (CoinGecko) poll separately every ~5 minutes and go stale on their own clock - they never block prices.");
@@ -514,13 +656,13 @@ private:
     void changedWatchlist() { if (onWatchlistChanged) onWatchlistChanged(); }
     void panel(const juce::String& title, std::function<void()> body) {
         auto* hdr = add(new juce::Label({}, title)); hdr->setFont(juce::Font(15.f, juce::Font::bold));
-        hdr->setColour(juce::Label::textColourId, th_.accent);
+        hdr->setColour(juce::Label::textColourId, settingsPalette::accent());
         hdr->setBounds(12, y_, 300, 22); y_ += 24;
         body(); y_ += 10;
     }
     void combo(const juce::String& label, std::vector<juce::String> items, int sel, std::function<void(int)> fn) {
         auto* l = add(new juce::Label({}, label)); l->setBounds(24, y_, 200, 22);
-        l->setColour(juce::Label::textColourId, th_.text);
+        l->setColour(juce::Label::textColourId, settingsPalette::text());
         auto* c = add(new juce::ComboBox()); int id = 1; for (auto& s : items) c->addItem(s, id++);
         c->setSelectedItemIndex(juce::jlimit(0, (int)items.size() - 1, sel), juce::dontSendNotification);
         c->setBounds(230, y_, 260, 22);
@@ -529,7 +671,7 @@ private:
     }
     void slider(const juce::String& label, double mn, double mx, double val, std::function<void(double)> fn) {
         auto* l = add(new juce::Label({}, label)); l->setBounds(24, y_, 200, 22);
-        l->setColour(juce::Label::textColourId, th_.text);
+        l->setColour(juce::Label::textColourId, settingsPalette::text());
         auto* s = add(new juce::Slider()); s->setRange(mn, mx, 0.01); s->setValue(val, juce::dontSendNotification);
         s->setBounds(230, y_, 300, 22);
         s->onValueChange = [this, s, fn]{ fn(s->getValue()); changed(); };
@@ -537,9 +679,13 @@ private:
     }
     void toggle(const juce::String& label, bool val, std::function<void(bool)> fn) {
         auto* t = add(new juce::ToggleButton(label)); t->setToggleState(val, juce::dontSendNotification);
-        t->setColour(juce::ToggleButton::textColourId, th_.text);
+        t->setColour(juce::ToggleButton::textColourId, settingsPalette::text());
         t->setBounds(24, y_, 460, 22);
         t->onClick = [this, t, fn]{ fn(t->getToggleState()); changed(); };
+        y_ += 26;
+    }
+    void button(const juce::String& a, std::function<void()> fa) {
+        auto* ba = add(new juce::TextButton(a)); ba->setBounds(24, y_, 300, 22); ba->onClick = fa;
         y_ += 26;
     }
     void buttonRow(const juce::String& a, const juce::String& b, std::function<void()> fa, std::function<void()> fb) {
@@ -549,19 +695,30 @@ private:
     }
     void note(const juce::String& text) {
         auto* l = add(new juce::Label({}, text)); l->setFont(11.f);
-        l->setColour(juce::Label::textColourId, th_.dim);
+        l->setColour(juce::Label::textColourId, settingsPalette::dimText());
         l->setBounds(24, y_, 660, 16); y_ += 18;
     }
 };
 class TickerSettingsWindow : public juce::DocumentWindow {
 public:
+    SettingsLookAndFeel settingsLnf; // declared before content so it outlives it
     SettingsContent content;
-    TickerSettingsWindow() : juce::DocumentWindow("TickerBar Settings", juce::Colour(0xff231f31), juce::DocumentWindow::closeButton) {
+    TickerSettingsWindow() : juce::DocumentWindow("TickerBar Settings", settingsPalette::base(), juce::DocumentWindow::closeButton) {
+        content.setLookAndFeel(&settingsLnf);
+        viewport.setLookAndFeel(&settingsLnf);
         content.build();
         viewport.setViewedComponent(&content, false);
         viewport.setScrollBarsShown(true, false);
         setContentNonOwned(&viewport, true);
         setSize(740, 660); setResizable(true, false); setUsingNativeTitleBar(true);
+    }
+    ~TickerSettingsWindow() override {
+        content.setLookAndFeel(nullptr);
+        viewport.setLookAndFeel(nullptr);
+    }
+    void visibilityChanged() override {
+        if (isVisible()) settingsPalette::applyDarkTitleBar(this);
+        juce::DocumentWindow::visibilityChanged();
     }
     void closeButtonPressed() override { setVisible(false); }
 private:
@@ -573,15 +730,21 @@ private:
 // =====================================================================
 MainComponent::MainComponent() {
     state = settingsstore::load();
-    theme_ = midnightKidsTheme();
+    // v0.3.0 migration: the new top toolbar strip needs ~30 px the
+    // pre-0.3.0 bar didn't have — grow the saved height ONCE (uiVer).
+    if (state.uiVer < 3) {
+        state.windowH = juce::jlimit(52, 1200, state.windowH + 30);
+        state.uiVer = 3;
+    }
+    theme_ = themeByName(state.themeName);
     setOpaque(false); // the window is non-opaque too: Background Opacity shows the desktop through
     setTooltip("TickerBar - prices are spot prices (Coinbase Exchange / CoinGecko)");
 
     wordmark_.setText("TickerBar", juce::dontSendNotification);
-    wordmark_.setFont(juce::Font(15.f, juce::Font::bold)); wordmark_.setColour(juce::Label::textColourId, theme_.accent);
+    wordmark_.setFont(juce::Font(15.f, juce::Font::bold));
     versionLabel_.setText(kVersion, juce::dontSendNotification);
-    versionLabel_.setFont(10.f); versionLabel_.setColour(juce::Label::textColourId, theme_.dim);
-    statusLabel_.setFont(10.5f); statusLabel_.setColour(juce::Label::textColourId, theme_.dim);
+    versionLabel_.setFont(10.f);
+    statusLabel_.setFont(10.5f);
     statusLabel_.setText("connecting...", juce::dontSendNotification);
     for (auto* c : { (juce::Component*)&wordmark_, (juce::Component*)&versionLabel_, (juce::Component*)&statusLabel_ }) {
         addAndMakeVisible(c);
@@ -590,22 +753,38 @@ MainComponent::MainComponent() {
     reserveBtn_.setClickingTogglesState(true);
     reserveBtn_.setToggleState(state.reserveScreenSpace, juce::dontSendNotification);
     reserveBtn_.setTooltip("Reserve screen space: Windows keeps maximised windows clear of the docked bar");
-    reserveBtn_.onClick = [this]{ state.reserveScreenSpace = reserveBtn_.getToggleState(); saveSettings(); syncScreenSpace(); };
-    dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
-    dockBtn_.setTooltip("Dock edge: click to cycle Top / Bottom / Left / Right - the bar snaps to that edge");
-    dockBtn_.onClick = [this]{ cycleDockEdge(); };
-    settingsBtn_.onClick = [this]{
-        settingsWin_->content.build();
-        settingsWin_->setVisible(true); settingsWin_->toFront(true);
-    };
-    minBtn_.onClick = [this]{ if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-                                 if (auto* peer = w->getPeer()) peer->setMinimised(true); };
-    quitBtn_.onClick = []{ juce::JUCEApplication::getInstance()->systemRequestedQuit(); };
+    reserveBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); state.reserveScreenSpace = reserveBtn_.getToggleState(); saveSettings(); syncScreenSpace(); };
     linkBtn_.setClickingTogglesState(true);
     linkBtn_.setToggleState(state.linkEnabled, juce::dontSendNotification);
     linkBtn_.setTooltip("Link: snap, drag, dock and share the background with the other family bars (MeterBar / SessionBar) when their Link is on too");
-    linkBtn_.onClick = [this]{ state.linkEnabled = linkBtn_.getToggleState(); saveSettings(); };
-    for (auto* b : { &reserveBtn_, &dockBtn_, &linkBtn_, &settingsBtn_, &minBtn_, &quitBtn_ }) addAndMakeVisible(b);
+    linkBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); state.linkEnabled = linkBtn_.getToggleState(); saveSettings(); };
+    arrangeBtn_.setTooltip("Arrange: slide every other window on this monitor clear of the bar");
+    arrangeBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); doArrange(); };
+    restoreBtn_.setTooltip("Restore windows moved by Arrange");
+    restoreBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); doRestore(); };
+    presetBtn_.setTooltip("Presets: named full configurations - appearance, watchlist AND window position");
+    presetBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); showPresetMenu(); };
+    stackBtn_.setTooltip("Stack: turn Link on, snap this bar to its dock edge, and line every linked bar up flush against it as one block");
+    stackBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Sparkle); doStackAll(); };
+    dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
+    dockBtn_.setTooltip("Dock edge: click to cycle Top / Bottom / Left / Right - the bar snaps to that edge");
+    dockBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); cycleDockEdge(); };
+    settingsBtn_.onClick = [this]{
+        uiClick(ClickSounds::Which::Pop);
+        settingsWin_->content.build();
+        settingsWin_->setVisible(true); settingsWin_->toFront(true);
+    };
+    // v0.3.0 item 1: the update indicator starts hidden and lights
+    // only when a check finds a newer release (MeterBar's pattern).
+    updateBtn_.setVisible(false);
+    updateBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop);
+        if (pendingRelease_.ok && pendingRelease_.newer) showUpdatePanel(pendingRelease_); };
+    minBtn_.onClick = [this]{ if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
+                                 if (auto* peer = w->getPeer()) peer->setMinimised(true); };
+    quitBtn_.onClick = []{ juce::JUCEApplication::getInstance()->systemRequestedQuit(); };
+    for (auto* b : { &reserveBtn_, &linkBtn_, &arrangeBtn_, &restoreBtn_, &presetBtn_, &stackBtn_,
+                     &dockBtn_, &settingsBtn_, &updateBtn_, &minBtn_, &quitBtn_ }) addAndMakeVisible(b);
+    applyChrome();
     // v0.2.0 (k): family link wiring. Bounds are the WINDOW's (the bar
     // is the window); the background packet is the family style
     // ordinal + opacity; the dock ordinal is the reserve machine's.
@@ -615,7 +794,7 @@ MainComponent::MainComponent() {
     };
     linkClient_.getBg = [this]{ return BarLinkClient::Bg{ (int)state.backgroundStyle, state.backgroundOpacity }; };
     linkClient_.applyBg = [this](const BarLinkClient::Bg& bg){
-        state.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 2, bg.style);
+        state.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 3, bg.style);
         state.backgroundOpacity = juce::jlimit(0.05f, 1.0f, bg.opacity);
         saveSettings(); repaint();
     };
@@ -643,6 +822,11 @@ MainComponent::MainComponent() {
     addAndMakeVisible(fngCell_.get());
     addAndMakeVisible(domCell_.get());
 
+    mascot_ = std::make_unique<MascotView>();
+    addChildComponent(mascot_.get()); // Anime theme only (applyTheme drives visibility)
+    fxPump_.onTick = [this]{ stepFx(); };
+
+    applyTheme();
     state.windowW = std::max(state.windowW, minimumBarWidth()); // supported-width floor from the first frame
     rebuildCells();
     client_.setWatchlist(state.watchlist);
@@ -653,8 +837,11 @@ MainComponent::MainComponent() {
     contextClient_.startPolling();
     refreshContext();
     syncScreenSpace();
+    syncFxPump();
     startTimerHz(4);
     setSize(state.windowW, state.windowH);
+    // v0.3.0 item 1: silent background update check on launch.
+    if (tbupdate::configured()) startUpdateCheck(true);
 }
 
 MainComponent::~MainComponent() {
@@ -666,52 +853,129 @@ MainComponent::~MainComponent() {
 }
 
 void MainComponent::paint(juce::Graphics& g) {
-    fillStyledBackground(g, getLocalBounds().toFloat(), state.backgroundStyle, theme_,
-                         juce::jlimit(0.15f, 1.0f, state.backgroundOpacity));
+    if (state.bgEffect == 1) drawVisualizerBackground(g);
+    else if (state.bgEffect == 2) drawGlowBackground(g);
+    else fillStyledBackground(g, getLocalBounds().toFloat(), state.backgroundStyle, theme_,
+                              juce::jlimit(0.15f, 1.0f, state.backgroundOpacity));
     g.setColour(theme_.border);
     g.drawRect(getLocalBounds().toFloat(), 1.f);
-    // status dot, painted here (position fixed in resized()) — colour by feed state
-    auto dot = juce::Rectangle<float>(14.f, (float)getHeight() / 2.f - 5.f, 10.f, 10.f);
+    // status dot (position set by resized: the toolbar strip, or the
+    // wordmark row in vertical mode) — colour by feed state
     auto c = feed_ == tickerbar::FeedStatus::Live ? theme_.good
            : feed_ == tickerbar::FeedStatus::Stale ? theme_.warn : theme_.bad;
-    g.setColour(c.withAlpha(0.25f)); g.fillEllipse(dot.expanded(2.f));
-    g.setColour(c); g.fillEllipse(dot);
+    g.setColour(c.withAlpha(0.25f)); g.fillEllipse(dotRect_.expanded(2.f));
+    g.setColour(c); g.fillEllipse(dotRect_);
 }
 
 void MainComponent::resized() {
-    auto r = getLocalBounds().reduced(8, 6);
-    r.removeFromLeft(24); // status dot (painted)
-    auto left = r.removeFromLeft(96);
-    wordmark_.setBounds(left.removeFromTop(20));
-    versionLabel_.setBounds(left.removeFromTop(12));
-    statusLabel_.setBounds(left);
-    quitBtn_.setBounds(r.removeFromRight(26).withSizeKeepingCentre(26, 24));
-    minBtn_.setBounds(r.removeFromRight(26).withSizeKeepingCentre(26, 24));
-    settingsBtn_.setBounds(r.removeFromRight(76).withSizeKeepingCentre(72, 24));
-    reserveBtn_.setBounds(r.removeFromRight(80).withSizeKeepingCentre(76, 24));
-    linkBtn_.setBounds(r.removeFromRight(56).withSizeKeepingCentre(52, 24));
-    dockBtn_.setBounds(r.removeFromRight(66).withSizeKeepingCentre(62, 24));
-    // market-context group at the right of the coin cells
-    if (domCell_ && fngCell_) {
-        domCell_->setBounds(r.removeFromRight(112));
-        r.removeFromRight(6);
-        fngCell_->setBounds(r.removeFromRight(112));
-        r.removeFromRight(6);
-    }
-    if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-        w->setResizeLimits(minimumBarWidth(), 56, 3840, 300);
-    syncScreenSpace(); // v0.2.0: a resize is a reserve-machine event
-    // cells share the middle equally
+    auto area = getLocalBounds();
+    const bool sideDock = state.dockEdge == tickerbar::DockEdge::Left || state.dockEdge == tickerbar::DockEdge::Right;
+    vertical_ = sideDock && area.getHeight() > area.getWidth();
+    // The control cluster, in MeterBar's order (item 11).
+    struct BtnW { juce::TextButton* b; int w; };
+    const BtnW cluster[] = {
+        { &reserveBtn_, 76 }, { &linkBtn_, 52 }, { &arrangeBtn_, 76 }, { &restoreBtn_, 76 },
+        { &presetBtn_, 64 }, { &stackBtn_, 56 }, { &dockBtn_, 62 }, { &settingsBtn_, 72 },
+        { &updateBtn_, 68 }, { &minBtn_, 26 }, { &quitBtn_, 46 },
+    };
+    auto btnVisible = [this](juce::TextButton* b) { return b != &updateBtn_ || updateAvailable_; };
+    updateBtn_.setVisible(updateAvailable_);
+    auto r = area.reduced(8, 6);
     const int n = (int)cells_.size();
-    if (n > 0) {
-        const int gap = 6;
-        const int w = (r.getWidth() - gap * (n - 1)) / n;
-        for (int i = 0; i < n; ++i) {
-            auto cellR = r.removeFromLeft(w);
-            cells_[(size_t)i]->setBounds(cellR);
-            r.removeFromLeft(gap);
+    const bool anime = state.themeName == "Anime";
+    if (!vertical_) {
+        // ---- horizontal: 30 px toolbar strip across the top ----
+        auto strip = r.removeFromTop(30);
+        dotRect_ = { (float)strip.getX() + 6.f, (float)strip.getY() + 10.f, 10.f, 10.f };
+        int clusterW = 0;
+        for (auto& bw : cluster) if (btnVisible(bw.b)) clusterW += bw.w + 4;
+        auto cl = strip.removeFromRight(clusterW);
+        for (int i = (int)std::size(cluster) - 1; i >= 0; --i) {
+            if (!btnVisible(cluster[i].b)) continue;
+            auto cellRect = cl.removeFromRight(cluster[i].w);
+            cluster[i].b->setBounds(cellRect.withSizeKeepingCentre(cluster[i].w, 24));
+            cl.removeFromRight(4);
         }
+        strip.removeFromLeft(24); // the status dot's space
+        wordmark_.setBounds(strip.removeFromLeft(92).withSizeKeepingCentre(92, 20));
+        versionLabel_.setBounds(strip.removeFromLeft(44).withSizeKeepingCentre(44, 14));
+        statusLabel_.setBounds(strip.withSizeKeepingCentre(strip.getWidth(), 14));
+        r.removeFromTop(4);
+        // ---- cells row ----
+        if (anime && mascot_) { mascot_->setBounds(r.removeFromRight(72)); r.removeFromRight(6); }
+        if (domCell_ && fngCell_) {
+            domCell_->setBounds(r.removeFromRight(112));
+            r.removeFromRight(6);
+            fngCell_->setBounds(r.removeFromRight(112));
+            r.removeFromRight(6);
+        }
+        if (n > 0) {
+            const int boundary = 16; // 10 px splitter + 6 px air
+            std::vector<int> expl((size_t)n, 0);
+            for (int i = 0; i < n; ++i) {
+                auto it = state.cellWidths.find(cells_[(size_t)i]->symbol);
+                if (it != state.cellWidths.end()) expl[(size_t)i] = it->second;
+            }
+            auto widths = tickerbar::solveCellWidths(r.getWidth(), boundary, expl, 90);
+            int x = r.getX();
+            for (int i = 0; i < n; ++i) {
+                cells_[(size_t)i]->setBounds(x, r.getY(), widths[(size_t)i], r.getHeight());
+                x += widths[(size_t)i];
+                if (i + 1 < n && i < (int)splitters_.size()) {
+                    splitters_[(size_t)i]->verticalBar = false;
+                    splitters_[(size_t)i]->setBounds(x + 3, r.getY(), 10, r.getHeight());
+                }
+                x += boundary;
+            }
+        }
+        if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
+            w->setResizeLimits(minimumBarWidth(), 92, 3840, 1200);
+    } else {
+        // ---- vertical: wordmark row, cluster grid, cells stacked ----
+        auto wm = r.removeFromTop(24);
+        dotRect_ = { (float)wm.getX() + 6.f, (float)wm.getY() + 7.f, 10.f, 10.f };
+        wm.removeFromLeft(24);
+        wordmark_.setBounds(wm.removeFromLeft(92).withSizeKeepingCentre(92, 20));
+        versionLabel_.setBounds(wm.removeFromLeft(44).withSizeKeepingCentre(44, 14));
+        statusLabel_.setBounds(wm.withSizeKeepingCentre(wm.getWidth(), 14));
+        r.removeFromTop(4);
+        int bx = r.getX(), by = r.getY();
+        for (auto& bw : cluster) {
+            if (!btnVisible(bw.b)) continue;
+            if (bx + bw.w > r.getRight()) { bx = r.getX(); by += 28; }
+            bw.b->setBounds(bx, by, bw.w, 24);
+            bx += bw.w + 4;
+        }
+        r.removeFromTop(by - r.getY() + 28);
+        // cells stacked full-width; persisted widths become heights
+        const int boundary = 16;
+        auto placeRow = [&](juce::Component* c, int h) {
+            c->setBounds(r.getX(), r.getY(), r.getWidth(), h);
+            r.removeFromTop(h);
+        };
+        if (n > 0) {
+            std::vector<int> expl((size_t)n, 0);
+            for (int i = 0; i < n; ++i) {
+                auto it = state.cellWidths.find(cells_[(size_t)i]->symbol);
+                if (it != state.cellWidths.end()) expl[(size_t)i] = it->second;
+            }
+            auto heights = tickerbar::solveCellWidths(r.getHeight() - 2 * 72, boundary, expl, 56);
+            for (int i = 0; i < n; ++i) {
+                placeRow(cells_[(size_t)i].get(), heights[(size_t)i]);
+                if (i + 1 < n && i < (int)splitters_.size()) {
+                    splitters_[(size_t)i]->verticalBar = true;
+                    splitters_[(size_t)i]->setBounds(r.getX(), r.getY() + 3, r.getWidth(), 10);
+                }
+                r.removeFromTop(boundary);
+            }
+        }
+        if (fngCell_) { placeRow(fngCell_.get(), 66); r.removeFromTop(6); }
+        if (domCell_) { placeRow(domCell_.get(), 66); r.removeFromTop(6); }
+        if (anime && mascot_) mascot_->setBounds(r.removeFromTop(96));
+        if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
+            w->setResizeLimits(200, 340, 1200, 3840);
     }
+    syncScreenSpace(); // v0.2.0: a resize is a reserve-machine event
 }
 
 void MainComponent::mouseDown(const juce::MouseEvent& e) { windowDragStarted(e); }
@@ -730,11 +994,102 @@ void MainComponent::rebuildCells() {
     for (auto& sym : state.watchlist) {
         auto cell = std::make_unique<CoinCell>(this);
         cell->symbol = sym;
-        cell->setTooltip(juce::String(sym) + " - click for detail. Prices: spot (Coinbase / CoinGecko).");
+        cell->setTooltip(juce::String(sym) + " - click for detail, drag sideways to reorder. Prices: spot (Coinbase / CoinGecko).");
         addAndMakeVisible(cell.get());
         cells_.push_back(std::move(cell));
     }
+    rebuildSplitters();
     resized();
+}
+
+void MainComponent::rebuildSplitters() {
+    splitters_.clear();
+    for (int i = 0; i + 1 < (int)cells_.size(); ++i) {
+        auto sp = std::make_unique<CellSplitter>();
+        sp->owner = this;
+        sp->pairIndex = i;
+        sp->onDragDelta = [this](int pair, int delta) {
+            if (pair < 0 || pair + 1 >= (int)cells_.size()) return;
+            const int w1 = vertical_ ? cells_[(size_t)pair]->getHeight() : cells_[(size_t)pair]->getWidth();
+            const int w2 = vertical_ ? cells_[(size_t)pair + 1]->getHeight() : cells_[(size_t)pair + 1]->getWidth();
+            auto pr = tickerbar::adjustPairWidths(w1, w2, delta, vertical_ ? 56 : 90);
+            state.cellWidths[cells_[(size_t)pair]->symbol] = pr.first;
+            state.cellWidths[cells_[(size_t)pair + 1]->symbol] = pr.second;
+            saveSettings();
+            resized();
+        };
+        addAndMakeVisible(sp.get());
+        splitters_.push_back(std::move(sp));
+    }
+}
+
+// --- cell drag arbitration (v0.3.0 item 9): the press decides by
+// direction — mostly-along-the-bar past a threshold becomes a cell
+// reorder; anything else becomes the ordinary window drag (started
+// at the decision point, so there is no jump, just a few px of dead
+// zone). Context cells never reorder (they are not in cells_). ---
+void MainComponent::cellDragBegin(juce::Component* cell, const juce::MouseEvent& e) {
+    dragCell_ = cell;
+    dragMode_ = 0;
+    dragStartScreen_ = e.getScreenPosition();
+    dragCellStartBounds_ = cell->getBounds();
+}
+void MainComponent::cellDragMove(juce::Component* cell, const juce::MouseEvent& e) {
+    if (cell != dragCell_) return;
+    const auto now = e.getScreenPosition();
+    const int dx = now.x - dragStartScreen_.x, dy = now.y - dragStartScreen_.y;
+    const int axis = vertical_ ? dy : dx, cross = vertical_ ? dx : dy;
+    bool isCoin = false;
+    for (auto& c : cells_) if (c.get() == cell) isCoin = true;
+    if (dragMode_ == 0) {
+        if (isCoin && std::abs(axis) > 14 && std::abs(axis) > 1.6 * std::abs(cross)) {
+            dragMode_ = 2;
+            cell->toFront(false);
+        } else if (std::abs(dx) + std::abs(dy) > 6) {
+            dragMode_ = 1;
+            windowDragStarted(e);
+            windowDragged(e);
+            return;
+        } else return;
+    }
+    if (dragMode_ == 1) { windowDragged(e); return; }
+    auto b = dragCellStartBounds_;
+    if (vertical_) b.setY(b.getY() + dy); else b.setX(b.getX() + dx);
+    cell->setBounds(b);
+}
+bool MainComponent::cellDragEnd(juce::Component* cell, const juce::MouseEvent&) {
+    const bool wasReorder = dragMode_ == 2 && cell == dragCell_;
+    dragCell_ = nullptr;
+    const int mode = dragMode_;
+    dragMode_ = 0;
+    if (!wasReorder) return false;
+    int from = -1;
+    for (int i = 0; i < (int)cells_.size(); ++i) if (cells_[(size_t)i].get() == cell) from = i;
+    if (from < 0) { resized(); return true; }
+    std::vector<int> centres;
+    for (int i = 0; i < (int)cells_.size(); ++i) {
+        if (i == from) continue;
+        auto b = cells_[(size_t)i]->getBounds();
+        centres.push_back(vertical_ ? b.getCentreY() : b.getCentreX());
+    }
+    auto db = cell->getBounds();
+    const int slot = tickerbar::dropSlot(centres, vertical_ ? db.getCentreY() : db.getCentreX());
+    auto order = tickerbar::indexOrderAfterMove((int)cells_.size(), from, slot);
+    std::vector<std::unique_ptr<CoinCell>> newCells(cells_.size());
+    std::vector<std::string> newWatch;
+    for (int i = 0; i < (int)order.size(); ++i) {
+        newCells[(size_t)i] = std::move(cells_[(size_t)order[(size_t)i]]);
+        newWatch.push_back(newCells[(size_t)i]->symbol);
+    }
+    cells_ = std::move(newCells);
+    if (newWatch != state.watchlist) {
+        state.watchlist = newWatch;
+        client_.setWatchlist(state.watchlist);
+        saveSettings();
+    }
+    rebuildSplitters();
+    resized();
+    return true;
 }
 
 void MainComponent::refreshData() {
@@ -752,6 +1107,7 @@ void MainComponent::refreshData() {
             const auto lv = levelsFor(cell->symbol);
             unsigned ev = tracker.step(lv, ctx->price);
             if (ev != tickerbar::AlertNone) {
+                mascotAnim_.triggerExcited(juce::Time::currentTimeMillis(), 2000); // item 18: a cross cheers
                 cell->flash();
                 if (state.alertSound) clickPlayer_.play();
                 if (state.alertToasts) {
@@ -764,6 +1120,16 @@ void MainComponent::refreshData() {
             }
         }
     }
+    // item 18: a watched price actually moving hops the mascot.
+    bool ticked = false;
+    for (auto& cell : cells_) {
+        if (const auto* ctx = snap.find(cell->symbol)) {
+            auto it = lastPrices_.find(cell->symbol);
+            if (it != lastPrices_.end() && std::abs(it->second - ctx->price) > 1e-12) ticked = true;
+            lastPrices_[cell->symbol] = ctx->price;
+        }
+    }
+    if (ticked) mascotAnim_.triggerBob(juce::Time::currentTimeMillis());
     refreshStatus();
 }
 
@@ -816,6 +1182,7 @@ void MainComponent::refreshStatus() {
 }
 
 void MainComponent::timerCallback() {
+    pollUpdater();
     refreshStatus();
     refreshContext(); // age-based stale transitions need no new data to show
     // v0.2.0: NO screen-space work here. The v0.1 sync ran from this
@@ -839,6 +1206,7 @@ void MainComponent::saveSettings() {
 }
 
 void MainComponent::settingsChanged(bool watchlistToo) {
+    applyTheme();
     linkClient_.notifyLocalSettings();
     if (auto* w = findParentComponentOfClass<juce::DocumentWindow>()) w->setAlwaysOnTop(state.pinned);
     client_.setPollSec(state.pollSec);
@@ -849,9 +1217,12 @@ void MainComponent::settingsChanged(bool watchlistToo) {
     }
     if (reserveBtn_.getToggleState() != state.reserveScreenSpace)
         reserveBtn_.setToggleState(state.reserveScreenSpace, juce::dontSendNotification);
+    if (linkBtn_.getToggleState() != state.linkEnabled)
+        linkBtn_.setToggleState(state.linkEnabled, juce::dontSendNotification);
     dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
     saveSettings();
     syncScreenSpace();
+    syncFxPump();
     repaint();
 }
 
@@ -942,9 +1313,9 @@ int MainComponent::minimumBarWidth() const {
         const int symW = (int)std::ceil(symFont.getStringWidthFloat(juce::String(sym)));
         cellsW += tickerbar::minCoinCellWidth(symW, pctWorst);
     }
-    if (!state.watchlist.empty()) cellsW += 6 * ((int)state.watchlist.size() - 1); // inter-cell gaps
-    const int chrome = 16 /*outer pad*/ + 24 /*status dot*/ + 96 /*wordmark block*/
-                     + 26 + 26 + 76 + 80 + 66 + 56 /*quit/min/settings/reserve/dock/link*/
+    if (!state.watchlist.empty()) cellsW += 16 * ((int)state.watchlist.size() - 1); // splitter boundaries
+    const int chrome = 16 /*outer pad*/ + 24 /*status dot*/ + 92 + 44 + 70 /*wordmark + version + status*/
+                     + 76 + 52 + 76 + 76 + 64 + 56 + 62 + 72 + 68 + 26 + 46 + 44 /*the v0.3.0 cluster + its gaps*/
                      + 112 + 6 + 112 + 6;     /*context cells + gaps*/
     return chrome + cellsW;
 }
@@ -1037,3 +1408,410 @@ void MainComponent::doArrange() {
     screenSpace_.arrange(nullptr, 0, tickerbar::ReserveEdge::Top); // stub: records the honest "unavailable" status
 }
 void MainComponent::doRestore() { screenSpace_.restore(); }
+
+// =====================================================================
+// v0.3.0: theme application + chrome
+// =====================================================================
+void MainComponent::applyTheme() {
+    theme_ = themeByName(state.themeName);
+    applyChrome();
+    if (mascot_) mascot_->setVisible(state.themeName == "Anime");
+    for (auto& c : cells_) c->repaint();
+    if (fngCell_) fngCell_->repaint();
+    if (domCell_) domCell_->repaint();
+    repaint();
+}
+void MainComponent::applyChrome() {
+    wordmark_.setColour(juce::Label::textColourId, theme_.accent);
+    versionLabel_.setColour(juce::Label::textColourId, theme_.dim);
+    statusLabel_.setColour(juce::Label::textColourId, theme_.dim);
+    for (auto* b : { &reserveBtn_, &linkBtn_, &arrangeBtn_, &restoreBtn_, &presetBtn_, &stackBtn_,
+                     &dockBtn_, &settingsBtn_, &minBtn_, &quitBtn_ }) {
+        b->setColour(juce::TextButton::buttonColourId, theme_.panel);
+        b->setColour(juce::TextButton::buttonOnColourId, theme_.accent);
+        b->setColour(juce::TextButton::textColourOffId, theme_.text);
+        b->setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    }
+    updateBtn_.setColour(juce::TextButton::buttonColourId, theme_.accent);
+    updateBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    updateBtn_.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+}
+void MainComponent::uiClick(ClickSounds::Which w) {
+    if (state.clickSounds) clicks_.play(w); // the toggle is the gate (item 5)
+}
+juce::Colour MainComponent::gainColour(bool up) const {
+    if (state.dataColorScheme == 0) return up ? theme_.good : theme_.bad;
+    auto pr = tickerbar::dataColorPair(state.dataColorScheme);
+    return dataRgb(up ? pr.up : pr.down);
+}
+
+// =====================================================================
+// v0.3.0 item 12: one-click stack. Link on (if it wasn't), snap to
+// the dock edge, then stamp the request into the shared block; the
+// other bars' clients run the core planner and move themselves.
+// =====================================================================
+void MainComponent::doStackAll() {
+    if (!state.linkEnabled) {
+        state.linkEnabled = true;
+        linkBtn_.setToggleState(true, juce::dontSendNotification);
+        saveSettings();
+    }
+    snapToDockEdge();
+    linkClient_.requestStackAll((int)state.dockEdge, currentWindowBounds());
+}
+
+// =====================================================================
+// v0.3.0 item 2: named presets (MeterBar's menu pattern). A preset
+// is a FULL configuration — window position included — and loading
+// one moves the bar (clamped on-screen via the core guard).
+// =====================================================================
+void MainComponent::showPresetMenu() {
+    enum { idNew = 1, idSave, idSaveAs, idOpenFolder, idLoadBase = 100 };
+    juce::PopupMenu m;
+    m.addItem(idNew, "New Preset (defaults)");
+    m.addItem(idSave, "Save", lastPresetName_.isNotEmpty());
+    m.addItem(idSaveAs, "Save As...");
+    m.addItem(idOpenFolder, "Open Preset Folder");
+    m.addSeparator();
+    auto files = presetio::listPresets();
+    for (int i = 0; i < files.size(); ++i) m.addItem(idLoadBase + i, files[i].getFileNameWithoutExtension());
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(presetBtn_), [this, files](int r) {
+        if (r == 1) {
+            auto keepTheme = state.themeName;
+            state = tickerbar::TickerState{};
+            state.themeName = keepTheme;
+            lastPresetName_.clear();
+            settingsChanged(true);
+        }
+        else if (r == 2) savePresetInteractive(false);
+        else if (r == 3) savePresetInteractive(true);
+        else if (r == 4) presetio::presetFolder().revealToUser();
+        else if (r >= 100 && r < 100 + files.size()) loadPresetFile(files[r - 100]);
+    });
+}
+void MainComponent::savePresetInteractive(bool saveAs) {
+    saveSettings(); // refresh the live window rect into state first — a preset includes position
+    if (!saveAs && lastPresetName_.isNotEmpty()) { presetio::save(state, lastPresetName_); return; }
+    auto w = std::make_shared<juce::AlertWindow>("Save Preset", "Preset name:", juce::AlertWindow::NoIcon);
+    w->addTextEditor("name", lastPresetName_.isEmpty() ? juce::String("My Preset") : lastPresetName_);
+    w->addButton("Save", 1); w->addButton("Cancel", 0);
+    w->enterModalState(true, juce::ModalCallbackFunction::create([this, w](int r) {
+        if (r == 1) {
+            lastPresetName_ = w->getTextEditorContents("name");
+            presetio::save(state, lastPresetName_);
+        }
+    }));
+}
+void MainComponent::loadPresetFile(const juce::File& f) {
+    tickerbar::TickerState loaded;
+    juce::String name;
+    if (!presetio::load(f, loaded, name)) return;
+    state = loaded;
+    lastPresetName_ = name;
+    const auto rect = juce::Rectangle<int>(state.windowX, state.windowY, state.windowW, state.windowH);
+    settingsChanged(true); // applies everything; its saveSettings() re-stamps the CURRENT window rect...
+    state.windowX = rect.getX(); state.windowY = rect.getY(); // ...so restore the preset's rect, then move
+    state.windowW = rect.getWidth(); state.windowH = rect.getHeight();
+    applyWindowRectFromState();
+    saveSettings();
+    uiClick(ClickSounds::Which::Sparkle);
+}
+void MainComponent::applyWindowRectFromState() {
+    auto* w = findParentComponentOfClass<juce::DocumentWindow>();
+    if (!w) return;
+    std::vector<tickerbar::IntRect> areas;
+    for (auto& d : juce::Desktop::getInstance().getDisplays().displays) {
+        auto ua = d.userArea;
+        areas.push_back({ ua.getX(), ua.getY(), ua.getWidth(), ua.getHeight() });
+    }
+    auto clamped = tickerbar::clampRectToWorkAreas(
+        { state.windowX, state.windowY, state.windowW, state.windowH }, areas);
+    w->setBounds(clamped.x, clamped.y, clamped.w, clamped.h);
+}
+
+// =====================================================================
+// v0.3.0 item 1: the in-app updater — MeterBar's flow ported
+// (check -> notes -> download -> size/SHA-256 verify -> install ->
+// relaunch), driven by GitHub's HTTP answers: a public repo performs
+// the full flow; an auth-blocked answer lands in the honest
+// private-repo fallback with a releases-page button.
+// =====================================================================
+void MainComponent::startUpdateCheck(bool fromLaunch) {
+    if (updateCheckPending_) return;
+    updateState_ = std::make_shared<tbupdate::SharedState>();
+    updateCheckPending_ = true;
+    updateCheckFromLaunch_ = fromLaunch;
+    tbupdate::checkLatestAsync(updateState_, juce::String(kVersionNum));
+}
+void MainComponent::checkForUpdates() {
+    if (!tbupdate::configured()) {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon, "Updates",
+            "TickerBar " + juce::String(kVersion) + " - updates are not configured in this build.");
+        return;
+    }
+    if (updateCheckPending_) {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon, "Updates",
+            "An update check is already running - its result will appear when it finishes.");
+        return;
+    }
+    startUpdateCheck(false);
+    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon, "Updates",
+        "Checking GitHub for the latest TickerBar release...\nThe result will pop up here when the check finishes.");
+}
+void MainComponent::pollUpdater() {
+    if (updateCheckPending_ && updateState_ && updateState_->done.load(std::memory_order_acquire)) {
+        updateCheckPending_ = false;
+        const bool wasLaunch = updateCheckFromLaunch_;
+        updateCheckFromLaunch_ = false;
+        const auto r = updateState_->result;
+        if (wasLaunch) {
+            if (r.ok && r.newer) { // launch checks are silent otherwise
+                pendingRelease_ = r;
+                updateAvailable_ = true;
+                resized();
+                repaint();
+            }
+        } else {
+            presentUpdateResult(r);
+        }
+    }
+    if (updateDownloadPending_ && updateDownload_ && updateDownload_->isFinished()) {
+        updateDownloadPending_ = false;
+        const int dlStatus = updateDownload_->statusCode();
+        const bool dlOk = !updateDownload_->hadError() && dlStatus == 200;
+        updateDownload_.reset();
+        if (!dlOk) {
+            if (tickerbar::httpStatusBlocksAuth(dlStatus)) {
+                showPrivateRepoFallback("The installer download itself was refused (HTTP "
+                    + juce::String(dlStatus) + ") - the same repository-visibility limit as the check.");
+                return;
+            }
+            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Update",
+                "The update download did not complete.\nTickerBar has NOT been changed - you are still on " + juce::String(kVersion) + ".");
+            return;
+        }
+        if (pendingRelease_.assetSize > 0 && updateInstallerFile_.getSize() != pendingRelease_.assetSize) {
+            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Update",
+                "The downloaded installer is the wrong size (expected " + juce::String(pendingRelease_.assetSize)
+                + " bytes, got " + juce::String(updateInstallerFile_.getSize()) + ").\nIt will NOT be run. TickerBar has not been changed.");
+            return;
+        }
+        if (pendingRelease_.assetDigest.isNotEmpty()) {
+            juce::String want = pendingRelease_.assetDigest;
+            if (want.startsWithIgnoreCase("sha256:")) want = want.substring(7);
+            const juce::String got = tbupdate::sha256HexOfFile(updateInstallerFile_);
+            if (!got.equalsIgnoreCase(want)) {
+                juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Update",
+                    "The downloaded installer's SHA-256 does not match the one GitHub published for this release.\n"
+                    "It will NOT be run. TickerBar has not been changed.");
+                return;
+            }
+        }
+        juce::ChildProcess installer;
+        const bool launched = installer.start({ updateInstallerFile_.getFullPathName(),
+                                                "/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART" });
+        if (!launched) {
+            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Update",
+                "The installer was downloaded to\n" + updateInstallerFile_.getFullPathName()
+                + "\nbut could not be started. You can run it by hand;\nTickerBar is still on " + juce::String(kVersion) + ".");
+            return;
+        }
+        juce::JUCEApplication::getInstance()->systemRequestedQuit();
+    }
+}
+void MainComponent::presentUpdateResult(const tbupdate::ReleaseInfo& r) {
+    pendingRelease_ = r;
+    if (r.authBlocked) {
+        showPrivateRepoFallback("TickerBar asked GitHub for the latest release, but GitHub "
+            "answers only signed-in users for a repository it treats as private - and TickerBar "
+            "deliberately carries no sign-in token.");
+        return;
+    }
+    if (!r.ok) {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Updates",
+            "Update check failed.\n" + r.error + "\nYou are still on TickerBar " + juce::String(kVersion) + ".");
+        return;
+    }
+    if (!r.newer) {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon, "Updates",
+            "You are up to date.\nTickerBar " + juce::String(kVersion) + " is the latest release (" + r.tag + ").");
+        return;
+    }
+    updateAvailable_ = true;
+    resized();
+    showUpdatePanel(r);
+}
+void MainComponent::showUpdatePanel(const tbupdate::ReleaseInfo& r) {
+    auto* w = new juce::AlertWindow("Update available",
+        "TickerBar " + r.tag + " is available (you are on " + juce::String(kVersion) + ").\nRelease notes:",
+        juce::AlertWindow::NoIcon);
+    auto* notesBox = new juce::TextEditor();
+    notesBox->setMultiLine(true, true);
+    notesBox->setReadOnly(true);
+    notesBox->setScrollbarsShown(true);
+    notesBox->setCaretVisible(false);
+    notesBox->setText(r.notes.trim().isNotEmpty() ? r.notes : "(This release was published without notes.)", false);
+    notesBox->setSize(520, 190);
+    w->addCustomComponent(notesBox);
+    w->addTextBlock("\nDownload & install will close TickerBar, run the installer,\n"
+                    "and relaunch at the new version. Your settings and presets\n"
+                    "are stored outside the app folder and are kept.");
+    w->addButton("Download & install", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    w->addButton("Later", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    w->enterModalState(true, juce::ModalCallbackFunction::create([this](int result) {
+        if (result == 1) startUpdateDownload();
+    }), true);
+}
+void MainComponent::showPrivateRepoFallback(const juce::String& detail) {
+    auto* w = new juce::AlertWindow("Updates",
+        "Automatic update check isn't available while the repository reads as private.\n\n"
+        + detail + "\n\n"
+        "You are still on TickerBar " + juce::String(kVersion) + ". Releases can be downloaded "
+        "from the releases page in your browser instead:",
+        juce::AlertWindow::InfoIcon);
+    w->addButton("Open releases page", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    w->addButton("Close", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    w->enterModalState(true, juce::ModalCallbackFunction::create([](int result) {
+        if (result == 1) juce::URL(tbupdate::releasesPageUrl()).launchInDefaultBrowser();
+    }), true);
+}
+void MainComponent::startUpdateDownload() {
+    if (updateDownloadPending_) return;
+    auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("TickerBar-Update");
+    dir.createDirectory();
+    updateInstallerFile_ = dir.getChildFile("TickerBar-Setup.exe");
+    updateInstallerFile_.deleteFile();
+    updateDownload_ = juce::URL(pendingRelease_.assetUrl).downloadToFile(updateInstallerFile_, juce::URL::DownloadTaskOptions());
+    if (updateDownload_ == nullptr) {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Update",
+            "The update download could not be started.\nTickerBar has NOT been changed - you are still on " + juce::String(kVersion) + ".");
+        return;
+    }
+    updateDownloadPending_ = true;
+    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon, "Update",
+        "Downloading TickerBar " + pendingRelease_.tag + "...\n"
+        "When the download finishes, TickerBar will close, install,\nand relaunch itself at the new version.");
+}
+
+// =====================================================================
+// v0.3.0 items 7/17/18: animated backgrounds + mascot drive. The
+// 30 Hz pump steps the pure cores; band energy comes from MeterBar's
+// BarLink broadcast when linked (item 17), else from the core's
+// ambient driver, so the bar breathes gently on its own.
+// =====================================================================
+tickerbar::VisualizerSettings MainComponent::vizSettings() const {
+    tickerbar::VisualizerSettings vs;
+    vs.enabled = true;
+    vs.baseHue = state.vizHue;
+    vs.saturation = state.vizSat;
+    vs.paletteSpread = state.vizSpread;
+    vs.cycleSeconds = state.vizCycle;
+    return vs;
+}
+tickerbar::GlowSettings MainComponent::glowSettings() const {
+    tickerbar::GlowSettings gs;
+    gs.baseHue = state.vizHue;
+    gs.saturation = state.vizSat;
+    gs.spread = state.vizSpread;
+    gs.cycleSeconds = state.vizCycle;
+    return gs;
+}
+void MainComponent::syncFxPump() {
+    fxPump_.setRunning(state.bgEffect != 0 || (mascot_ && mascot_->isVisible()));
+}
+void MainComponent::stepFx() {
+    const float dt = 1.f / 30.f;
+    fxClock_ += dt;
+    float bands[3] = { 0.f, 0.f, 0.f }, level = 0.f;
+    float pkt[4];
+    if (state.linkEnabled && linkClient_.peerAudio(tickerbar::kLinkAppMeter, pkt)) {
+        bands[0] = pkt[0]; bands[1] = pkt[1]; bands[2] = pkt[2]; level = pkt[3];
+    } else {
+        tickerbar::ambientBands(fxClock_, bands, level);
+    }
+    if (state.bgEffect == 1) viz_.update(dt, bands, vizSettings());
+    else if (state.bgEffect == 2) glow_.update(dt, bands, level);
+    if (mascot_ && mascot_->isVisible()) {
+        const long long now = juce::Time::currentTimeMillis();
+        mascot_->excited = mascotAnim_.excited(now);
+        mascot_->bobPx = mascotAnim_.bobPx(now);
+        mascot_->repaint();
+    }
+    if (state.bgEffect != 0) repaint();
+}
+void MainComponent::drawVisualizerBackground(juce::Graphics& g) {
+    // MeterBar's composite: black -> blurred particle layer (the
+    // colour wash covers the whole background) -> crisp dots.
+    auto bounds = getLocalBounds();
+    g.fillAll(juce::Colours::black);
+    if (bounds.isEmpty()) return;
+    const int iw = juce::jlimit(1, 480, bounds.getWidth() / 2);
+    const int ih = juce::jlimit(1, 270, bounds.getHeight() / 2);
+    if (!vizCache_.isValid() || vizCache_.getWidth() != iw || vizCache_.getHeight() != ih) {
+        vizCache_ = juce::Image(juce::Image::RGB, iw, ih, true);
+        vizBlur_ = juce::Image(juce::Image::RGB, iw, ih, true);
+    }
+    auto vs = vizSettings();
+    {
+        juce::Graphics ig(vizCache_);
+        ig.fillAll(juce::Colours::black);
+        for (auto& pt : viz_.particles()) {
+            auto c = viz_.colorFor(pt, vs);
+            ig.setColour(juce::Colour(c.r, c.g, c.b));
+            const float px = pt.x * (float)iw, py = pt.y * (float)ih;
+            const float r = pt.size;
+            ig.fillEllipse(px - r, py - r, r * 2.f, r * 2.f);
+        }
+    }
+    vizBlur_ = vizCache_;
+    vizBlur_.duplicateIfShared();
+    juce::ImageConvolutionKernel kernel(5);
+    kernel.createGaussianBlur(1.8f);
+    kernel.applyToImage(vizBlur_, vizCache_, vizBlur_.getBounds());
+    const float op = juce::jlimit(0.15f, 1.0f, state.backgroundOpacity);
+    g.setOpacity(op);
+    g.drawImage(vizBlur_, bounds.toFloat());
+    g.setOpacity(0.9f * op);
+    g.drawImage(vizCache_, bounds.toFloat());
+    g.setOpacity(1.0f);
+}
+void MainComponent::drawGlowBackground(juce::Graphics& g) {
+    // The reactive glow: sample the core field in GROUP space (the
+    // union of the linked bars' screen rects), so a linked block
+    // reads as one continuous surface; unlinked, the group is the
+    // bar itself. Near-black base, soft blooms, pinstripes on top.
+    auto bounds = getLocalBounds();
+    g.fillAll(juce::Colours::black);
+    if (bounds.isEmpty()) return;
+    const int iw = juce::jlimit(8, 240, bounds.getWidth() / 4);
+    const int ih = juce::jlimit(8, 135, bounds.getHeight() / 4);
+    if (!glowCache_.isValid() || glowCache_.getWidth() != iw || glowCache_.getHeight() != ih)
+        glowCache_ = juce::Image(juce::Image::RGB, iw, ih, true);
+    auto group = linkClient_.groupRect();
+    auto own = getScreenBounds();
+    if (group.isEmpty() || own.isEmpty()) group = own;
+    auto gs = glowSettings();
+    {
+        juce::Image::BitmapData bd(glowCache_, juce::Image::BitmapData::writeOnly);
+        for (int y = 0; y < ih; ++y) {
+            const float sy = (float)own.getY() + (y + 0.5f) / (float)ih * (float)own.getHeight();
+            const float gy = group.getHeight() > 0 ? (sy - (float)group.getY()) / (float)group.getHeight() : 0.5f;
+            for (int x = 0; x < iw; ++x) {
+                const float sx = (float)own.getX() + (x + 0.5f) / (float)iw * (float)own.getWidth();
+                const float gx = group.getWidth() > 0 ? (sx - (float)group.getX()) / (float)group.getWidth() : 0.5f;
+                auto c = glow_.sample(gx, gy, gs);
+                bd.setPixelColour(x, y, juce::Colour(c.r, c.g, c.b));
+            }
+        }
+    }
+    g.setOpacity(juce::jlimit(0.15f, 1.0f, state.backgroundOpacity));
+    g.drawImage(glowCache_, bounds.toFloat());
+    const float groupW = group.getWidth() > 0 ? (float)group.getWidth() : 1.f;
+    g.setColour(juce::Colours::white);
+    for (int lx = 0; lx < bounds.getWidth(); lx += 2) {
+        const float gx = ((float)own.getX() + (float)lx - (float)group.getX()) / groupW;
+        const float a = tickerbar::GlowField::pinstripe(gx);
+        if (a > 0.f) { g.setOpacity(a); g.drawVerticalLine(lx, 0.f, (float)bounds.getHeight()); }
+    }
+    g.setOpacity(1.0f);
+}

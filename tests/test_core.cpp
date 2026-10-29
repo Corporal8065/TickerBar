@@ -19,6 +19,14 @@
 #include <tickerbar/Layout.hpp>
 #include <tickerbar/State.hpp>
 #include <tickerbar/BarLink.hpp>
+#include <tickerbar/SemVer.hpp>
+#include <tickerbar/ReleaseParse.hpp>
+#include <tickerbar/WindowGeom.hpp>
+#include <tickerbar/ChartMath.hpp>
+#include <tickerbar/DataColors.hpp>
+#include <tickerbar/Visualizer.hpp>
+#include <tickerbar/Glow.hpp>
+#include <tickerbar/Mascot.hpp>
 #ifndef FIXTURES_DIR
 #define FIXTURES_DIR "tests/fixtures"
 #endif
@@ -542,6 +550,204 @@ int main() {
     CHECK(sync2.seenSeq[0] == 3 && sync2.seenSeq[2] == 4);
     CHECK(!bgAdoption(sh2, 1, sync2, now, out));
 }
+
+
+    // ---------- v0.3.0: SemVer ----------
+    {
+        SemVer v;
+        CHECK(parseSemVer("v0.3.0", v) && v.major == 0 && v.minor == 3 && v.patch == 0);
+        CHECK(parseSemVer("0.20.1", v) && v.minor == 20 && v.patch == 1);
+        CHECK(!parseSemVer("banana", v));
+        CHECK(semVerIsNewer("v0.3.0", "0.2.1"));
+        CHECK(!semVerIsNewer("v0.2.1", "0.3.0"));
+        CHECK(!semVerIsNewer("v0.3.0", "0.3.0"));
+    }
+    // ---------- v0.3.0: ReleaseParse ----------
+    {
+        ReleaseFields f;
+        const std::string json = R"({"tag_name":"v0.3.0","body":"notes here","assets":[{"name":"TickerBar-Setup.exe","browser_download_url":"https://example.invalid/TickerBar-Setup.exe","size":1234567,"digest":"sha256:abcd"}]})";
+        CHECK(parseReleaseJson(json, f));
+        CHECK(f.tag == "v0.3.0" && f.hasAsset && f.assetSize == 1234567);
+        CHECK(f.assetUrl.find("TickerBar-Setup.exe") != std::string::npos);
+        CHECK(f.assetDigest == "sha256:abcd");
+        ReleaseFields g;
+        CHECK(parseReleaseJson(R"({"tag_name":"v9.9.9","assets":[]})", g));
+        CHECK(!g.hasAsset);
+    }
+    // ---------- v0.3.0: WindowGeom clamp (off-screen restore fix) ----------
+    {
+        std::vector<IntRect> areas{ IntRect{0, 0, 1920, 1040} };
+        IntRect inside{ 100, 100, 900, 96 };
+        CHECK(clampRectToWorkAreas(inside, areas) == inside);
+        IntRect offRight{ 5000, 100, 900, 96 };
+        auto c1 = clampRectToWorkAreas(offRight, areas);
+        CHECK(c1.x == 1920 - 900 && c1.y == 100 && c1.w == 900);
+        IntRect offTop{ 100, -500, 900, 96 };
+        auto c2 = clampRectToWorkAreas(offTop, areas);
+        CHECK(c2.y == 0 && c2.x == 100);
+        IntRect huge{ -50, -50, 4000, 2000 };
+        auto c3 = clampRectToWorkAreas(huge, areas);
+        CHECK(c3.x == 0 && c3.y == 0 && c3.w == 4000); // size preserved, pinned to origin
+        std::vector<IntRect> two{ IntRect{0, 0, 1920, 1040}, IntRect{1920, 0, 1920, 1040} };
+        IntRect onSecond{ 2000, 50, 800, 96 };
+        CHECK(clampRectToWorkAreas(onSecond, two) == onSecond);
+        CHECK(rectTouchesAnyArea(onSecond, two));
+        CHECK(!rectTouchesAnyArea(IntRect{9000, 9000, 100, 100}, two));
+        auto c4 = clampRectToWorkAreas(IntRect{9000, 9000, 100, 100}, two); // nearest area wins
+        CHECK(c4.x + c4.w <= 3840 && c4.y + c4.h <= 1040);
+        CHECK(clampRectToWorkAreas(inside, {}) == inside); // no areas = no opinion
+    }
+    // ---------- v0.3.0: ChartMath volume MA/SD ----------
+    {
+        std::vector<double> flat(60, 100.0);
+        auto pts = volumeMaSd(flat);
+        CHECK(pts.size() == 60);
+        CHECK(near(pts[59].ma, 100.0) && near(pts[59].sd, 0.0));
+        bool anyHot = false; for (auto& p : pts) anyHot = anyHot || p.hot;
+        CHECK(!anyHot); // a flat series has no hot bars, by construction
+        std::vector<double> spiky(30, 100.0); spiky.push_back(10000.0);
+        auto sp = volumeMaSd(spiky);
+        CHECK(sp.back().window == 31);
+        CHECK(sp.back().hot);
+        std::vector<double> early; early.push_back(5000.0); for (int i = 0; i < 30; ++i) early.push_back(100.0);
+        auto ep = volumeMaSd(early);
+        CHECK(!ep[0].hot); // window too small for a 3-sigma claim
+        CHECK(ep[0].window == 1 && near(ep[0].ma, 5000.0));
+    }
+    // ---------- v0.3.0: DataColors ----------
+    {
+        for (int i = 0; i < kDataColorSchemeCount; ++i) {
+            auto pr = dataColorPair(i);
+            CHECK(pr.up != pr.down);
+        }
+        CHECK(dataColorPair(1).up == Rgb({248, 149, 64})); // Plasma .75 stop
+        CHECK(std::string(dataColorSchemeName(0)) == "Family");
+        CHECK(std::string(dataColorSchemeName(4)) == "Magma");
+    }
+    // ---------- v0.3.0: GlowField ----------
+    {
+        GlowSettings gs;
+        GlowField a, b;
+        const float zero[3] = { 0.f, 0.f, 0.f };
+        for (int i = 0; i < 30; ++i) { a.update(1.f / 30.f, zero, 0.f); b.update(1.f / 30.f, zero, 0.f); }
+        auto base = a.sample(0.5f, 0.5f, gs);
+        CHECK(base.r <= 10 && base.g <= 10 && base.b <= 14); // near-black with no energy
+        CHECK(base.r == b.sample(0.5f, 0.5f, gs).r);        // deterministic
+        const float hot[3] = { 1.f, 0.8f, 0.6f };
+        GlowField c;
+        c.update(0.05f, hot, 0.1f); // the rise from silence is itself an onset...
+        for (int i = 0; i < 60; ++i) c.update(0.05f, hot, 0.1f);
+        CHECK(c.pump() < 0.2f);     // ...which decays away at a steady level
+        c.update(0.05f, hot, 0.9f);
+        CHECK(c.pump() > 0.5f); // a fresh jump slams the pump envelope
+        for (int i = 0; i < 60; ++i) c.update(1.f / 30.f, hot, 0.9f);
+        CHECK(c.band(0) > 0.9f); // smoothing converges to the target
+        auto lit = c.sample(0.22f, 0.58f, gs); // low bloom centre
+        CHECK(lit.r > 40 || lit.b > 40);       // the bloom actually lights
+        CHECK(GlowField::pinstripe(0.0f) == 0.05f);
+        CHECK(GlowField::pinstripe(0.01f) == 0.0f);
+        float bands[3], lvl = 0.f;
+        ambientBands(3.7, bands, lvl);
+        CHECK(bands[0] >= 0.f && bands[0] <= 1.f && lvl >= 0.f && lvl <= 1.f);
+    }
+    // ---------- v0.3.0: visualizer emitter model ----------
+    {
+        VisualizerSettings vs; vs.enabled = true;
+        VisualizerEngine e;
+        const float loud[3] = { 0.9f, 0.2f, 0.2f };
+        e.update(0.016f, loud, vs);
+        CHECK(e.burstCount() >= 1);
+        int heads = 0; for (auto& p : e.particles()) if (p.emitter) ++heads;
+        CHECK(heads >= 3);
+        // speed of a head eases out over time; strand dots appear
+        float speed0 = 0.f;
+        for (auto& p : e.particles()) if (p.emitter) { speed0 = std::sqrt(p.vx * p.vx + p.vy * p.vy); break; }
+        for (int i = 0; i < 30; ++i) e.update(0.016f, loud, vs);
+        int dots = 0; float speed1 = -1.f;
+        for (auto& p : e.particles()) {
+            if (p.burst && !p.emitter) ++dots;
+            if (p.emitter && speed1 < 0.f) speed1 = std::sqrt(p.vx * p.vx + p.vy * p.vy);
+        }
+        CHECK(dots > 0);                       // heads shed strand dots
+        CHECK(speed1 >= 0.f && speed1 < speed0); // ease-out deceleration
+        // colour drifts with distance travelled
+        VizParticle probe; probe.burst = true; probe.hueT = 0.2f; probe.dist = 0.f; probe.life = 10.f;
+        auto cA = e.colorFor(probe, vs);
+        probe.dist = 0.5f;
+        auto cB = e.colorFor(probe, vs);
+        CHECK(cA.r != cB.r || cA.g != cB.g || cA.b != cB.b);
+        // cap respected even under sustained triggers
+        VisualizerSettings small = vs; small.particleCap = 40;
+        VisualizerEngine e2;
+        for (int i = 0; i < 120; ++i) e2.update(0.016f, loud, small);
+        CHECK((int)e2.particles().size() <= 40);
+    }
+    // ---------- v0.3.0: BarLink stack planner + audio + republish ----------
+    {
+        const long long now = 100000;
+        LinkShared sh;
+        auto& m = sh.slots[0]; m.appId = 0; m.linked = 1; m.heartbeatMs = now; m.rect = IntRect{100, 96, 800, 40};
+        auto& t = sh.slots[1]; t.appId = 1; t.linked = 1; t.heartbeatMs = now; t.rect = IntRect{100, 0, 900, 96};
+        t.stackEdge = 0; t.stackAnchor = t.rect;
+        auto& s2 = sh.slots[2]; s2.appId = 2; s2.linked = 1; s2.heartbeatMs = now; s2.rect = IntRect{50, 300, 700, 108};
+        IntRect targets[3];
+        CHECK(planStackAll(sh, now, 1, targets) == 3);
+        CHECK(targets[1] == t.rect);
+        CHECK(targets[0].y == 96 && targets[0].x == 100);        // meter below the ticker, x aligned
+        CHECK(targets[2].y == 96 + 40 && targets[2].x == 100);   // session below the meter
+        s2.linked = 0;
+        CHECK(planStackAll(sh, now, 1, targets) == 2);
+        CHECK(targets[2].w == 0);
+        t.stackEdge = 1; // bottom edge: stack upward
+        s2.linked = 1;
+        CHECK(planStackAll(sh, now, 1, targets) == 3);
+        CHECK(targets[0].y == 0 - 40);
+        float pkt[4] = { -1, -1, -1, -1 };
+        CHECK(!audioPacket(m, now, pkt)); // never published
+        m.audioSeq = 7; m.audioLow = 0.5f; m.audioMid = 0.25f; m.audioHigh = 0.125f; m.audioLevel = 0.75f;
+        CHECK(audioPacket(m, now, pkt));
+        CHECK(near(pkt[0], 0.5) && near(pkt[3], 0.75));
+        CHECK(!audioPacket(m, now + kPeerStaleMs + 1, pkt)); // stale heartbeat = not live
+        BgSyncState bs; bs.publishedStyle = 2; bs.publishedPct = 80;
+        CHECK(!bgIsLocalChange(bs, 2, 80));
+        bgForceRepublish(bs);
+        CHECK(bgIsLocalChange(bs, 2, 80)); // re-stamp forced
+    }
+    // ---------- v0.3.0: cell width solver + reorder math ----------
+    {
+        auto w = solveCellWidths(1000, 8, {300, 0, 0}, 100);
+        CHECK(w[0] == 300 && w[1] == 342 && w[2] == 342);
+        auto w2 = solveCellWidths(500, 10, {0, 0}, 60);
+        CHECK(w2[0] + w2[1] == 490);
+        auto pr = adjustPairWidths(200, 200, 50, 80);
+        CHECK(pr.first == 250 && pr.second == 150);
+        auto pr2 = adjustPairWidths(200, 200, 500, 80);
+        CHECK(pr2.first == 320 && pr2.second == 80); // min width clamps
+        CHECK(pr2.first + pr2.second == 400);        // pair sum preserved
+        CHECK(dropSlot({100, 300, 500}, 350) == 2);
+        CHECK(dropSlot({100, 300, 500}, 50) == 0);
+        CHECK(indexOrderAfterMove(4, 0, 2) == std::vector<int>({1, 2, 0, 3}));
+        CHECK(indexOrderAfterMove(4, 3, 0) == std::vector<int>({3, 0, 1, 2}));
+    }
+    // ---------- v0.3.0: Mascot envelope ----------
+    {
+        MascotAnim ma;
+        CHECK(ma.bobPx(1000) == 0.f && !ma.excited(1000));
+        ma.triggerBob(1000);
+        CHECK(ma.bobPx(1000) == 0.f);
+        CHECK(ma.bobPx(1065) < -4.9f); // half-sine peak mid-hop
+        CHECK(ma.bobPx(1200) == 0.f);
+        ma.triggerExcited(2000, 2000);
+        CHECK(ma.excited(3999) && !ma.excited(4001));
+    }
+    // ---------- v0.3.0: state defaults ----------
+    {
+        TickerState d;
+        CHECK(!d.clickSounds && d.bgEffect == 0 && d.dataColorScheme == 0);
+        CHECK(d.uiVer == 3 && d.cellWidths.empty());
+        CHECK((int)BackgroundStyle::Pastel == 3);
+        CHECK(d.windowH == 96);
+    }
 
     std::printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
