@@ -13,6 +13,7 @@
 #include "ScreenSpace.h"
 #include "ClickPlayer.h"
 #include "ToastNotifier.h"
+#include "BarLink.h" // v0.2.0 (k): family link client
 class CoinCell;
 class ContextCell;
 class TickerSettingsWindow;
@@ -66,6 +67,8 @@ private:
     PriceClient client_;
     ContextClient contextClient_;
     std::unique_ptr<ContextCell> fngCell_, domCell_;
+    BarLinkClient linkClient_{ tickerbar::kLinkAppTicker }; // v0.2.0 (k)
+    juce::TextButton linkBtn_{ "Link" };
     ScreenSpace screenSpace_;
     tickerbar::ReserveMachine reserveMachine_;
     ToastNotifier toastNotifier_;

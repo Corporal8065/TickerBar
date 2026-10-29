@@ -269,3 +269,10 @@ README_TEST.md. Prices are perp marks, not spot; the F&G index updates
 ~daily at the source; CoinGecko's free endpoint rate-limits shared IPs,
 which the context cell absorbs as staleness, never as a price-path
 fault.
+
+## Addendum (same day) — (k) family linking landed
+
+Core `tickerbar/BarLink.hpp` + app `BarLink.h` + on-bar Link toggle,
+as detailed in REQUESTS.md (k). Suite after: **320 checks, 0
+failures** (307 + 13 protocol-geometry checks). The multi-process
+behaviour needs a live two-bar field test on Windows.

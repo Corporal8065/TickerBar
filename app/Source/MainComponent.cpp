@@ -601,7 +601,29 @@ MainComponent::MainComponent() {
     minBtn_.onClick = [this]{ if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
                                  if (auto* peer = w->getPeer()) peer->setMinimised(true); };
     quitBtn_.onClick = []{ juce::JUCEApplication::getInstance()->systemRequestedQuit(); };
-    for (auto* b : { &reserveBtn_, &dockBtn_, &settingsBtn_, &minBtn_, &quitBtn_ }) addAndMakeVisible(b);
+    linkBtn_.setClickingTogglesState(true);
+    linkBtn_.setToggleState(state.linkEnabled, juce::dontSendNotification);
+    linkBtn_.setTooltip("Link: snap, drag, dock and share the background with the other family bars (MeterBar / SessionBar) when their Link is on too");
+    linkBtn_.onClick = [this]{ state.linkEnabled = linkBtn_.getToggleState(); saveSettings(); };
+    for (auto* b : { &reserveBtn_, &dockBtn_, &linkBtn_, &settingsBtn_, &minBtn_, &quitBtn_ }) addAndMakeVisible(b);
+    // v0.2.0 (k): family link wiring. Bounds are the WINDOW's (the bar
+    // is the window); the background packet is the family style
+    // ordinal + opacity; the dock ordinal is the reserve machine's.
+    linkClient_.getBounds = [this]{ return currentWindowBounds(); };
+    linkClient_.setBounds = [this](juce::Rectangle<int> r){
+        if (auto* w = findParentComponentOfClass<juce::DocumentWindow>()) w->setBounds(r);
+    };
+    linkClient_.getBg = [this]{ return BarLinkClient::Bg{ (int)state.backgroundStyle, state.backgroundOpacity }; };
+    linkClient_.applyBg = [this](const BarLinkClient::Bg& bg){
+        state.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 2, bg.style);
+        state.backgroundOpacity = juce::jlimit(0.05f, 1.0f, bg.opacity);
+        saveSettings(); repaint();
+    };
+    linkClient_.getDockedEdge = [this]{
+        return reserveMachine_.reserved() ? (int)reserveMachine_.edge() : -1;
+    };
+    linkClient_.isLinked = [this]{ return state.linkEnabled; };
+    linkClient_.start();
 
     settingsWin_ = std::make_unique<TickerSettingsWindow>();
     settingsWin_->content.owner = this;
@@ -667,6 +689,7 @@ void MainComponent::resized() {
     minBtn_.setBounds(r.removeFromRight(26).withSizeKeepingCentre(26, 24));
     settingsBtn_.setBounds(r.removeFromRight(76).withSizeKeepingCentre(72, 24));
     reserveBtn_.setBounds(r.removeFromRight(80).withSizeKeepingCentre(76, 24));
+    linkBtn_.setBounds(r.removeFromRight(56).withSizeKeepingCentre(52, 24));
     dockBtn_.setBounds(r.removeFromRight(66).withSizeKeepingCentre(62, 24));
     // market-context group at the right of the coin cells
     if (domCell_ && fngCell_) {
@@ -816,6 +839,7 @@ void MainComponent::saveSettings() {
 }
 
 void MainComponent::settingsChanged(bool watchlistToo) {
+    linkClient_.notifyLocalSettings();
     if (auto* w = findParentComponentOfClass<juce::DocumentWindow>()) w->setAlwaysOnTop(state.pinned);
     client_.setPollSec(state.pollSec);
     if (watchlistToo) {
@@ -920,7 +944,7 @@ int MainComponent::minimumBarWidth() const {
     }
     if (!state.watchlist.empty()) cellsW += 6 * ((int)state.watchlist.size() - 1); // inter-cell gaps
     const int chrome = 16 /*outer pad*/ + 24 /*status dot*/ + 96 /*wordmark block*/
-                     + 26 + 26 + 76 + 80 + 66 /*quit/min/settings/reserve/dock*/
+                     + 26 + 26 + 76 + 80 + 66 + 56 /*quit/min/settings/reserve/dock/link*/
                      + 112 + 6 + 112 + 6;     /*context cells + gaps*/
     return chrome + cellsW;
 }
