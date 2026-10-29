@@ -11,7 +11,7 @@
 ; ISCC /DMyAppVersion=<version>. The literal below is ONLY the
 ; fallback for a bare manual `ISCC TickerBar.iss` with no /D.
 #ifndef MyAppVersion
-#define MyAppVersion "0.3.1"
+#define MyAppVersion "0.3.2"
 #endif
 #define MyAppExeName "TickerBar.exe"
 

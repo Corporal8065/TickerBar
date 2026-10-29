@@ -11,8 +11,8 @@
 #if JUCE_WINDOWS
  #include <windows.h> // native rects for the AppBar sync (physical pixels)
 #endif
-static const char* kVersion = "v0.3.1";
-static const char* kVersionNum = "0.3.1";
+static const char* kVersion = "v0.3.2";
+static const char* kVersionNum = "0.3.2";
 static juce::String dockEdgeName(tickerbar::DockEdge e) {
     switch (e) {
         case tickerbar::DockEdge::Top: return "Top";
@@ -561,6 +561,8 @@ public:
             toggle("Show Fear & Greed cell", st->showFearGreed, [&](bool b){ st->showFearGreed = b; });
             toggle("Show BTC dominance cell", st->showBtcDominance, [&](bool b){ st->showBtcDominance = b; });
             note("The two market-context cells at the end of the bar (Vishona's request). Drag the divider beside a context cell to change its width - the width is remembered, like the coin cells.");
+            button("Reset layout to defaults", [this]{ owner->resetLayoutToDefaults(); });
+            note("Layout only: every cell shown again, all dragged cell widths forgotten, coin order back to BTC / ETH / HYPE. Your coins, alerts, theme and poll settings are kept.");
         });
         panel("Alerts", [&]{
             toggle("Soft click sound on a cross (default off)", st->alertSound, [&](bool b){ st->alertSound = b; });
@@ -643,7 +645,7 @@ public:
         });
         panel("About", [&]{
             button("Check for updates", [this]{ owner->checkForUpdates(); });
-            note("TickerBar v0.3.1 - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
+            note("TickerBar v0.3.2 - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
             note("Detail chart: candlesticks + volume with 24h / 7d / 30d ranges. Coinbase caps one candles request at 300: 24h/7d are hourly, 30d is daily. CoinGecko (HYPE) supplies hourly closes only - no OHLC, no volume, no 30d - and the chart note says so.");
             note("Polls every N seconds (Window panel). If the feed drops, cells grey out and keep the last real prices, marked STALE - never fake-fresh numbers.");
             note("Context cells: Fear & Greed index (alternative.me) and BTC dominance (CoinGecko) poll separately every ~5 minutes and go stale on their own clock - they never block prices.");
@@ -840,6 +842,14 @@ MainComponent::MainComponent() {
     ctxSplitB_->owner = this;
     ctxSplitB_->onDragDelta = [this](int, int delta) { onContextSplitterDrag(false, delta); };
     addChildComponent(ctxSplitB_.get());
+    // v0.3.2: the trailing divider — right of the last coin cell
+    // when both context cells are hidden (where divider A used to
+    // vanish with them). Dragging it resizes the window along the
+    // bar axis; resized() places it and drives its visibility.
+    trailSplit_ = std::make_unique<CellSplitter>();
+    trailSplit_->owner = this;
+    trailSplit_->onDragDelta = [this](int, int delta) { onTrailingSplitterDrag(delta); };
+    addChildComponent(trailSplit_.get());
 
     mascot_ = std::make_unique<MascotView>();
     addChildComponent(mascot_.get()); // Anime theme only (applyTheme drives visibility)
@@ -910,6 +920,7 @@ void MainComponent::resized() {
     if (domCell_) domCell_->setVisible(showD);
     if (ctxSplitA_) ctxSplitA_->setVisible((showF || showD) && n > 0);
     if (ctxSplitB_) ctxSplitB_->setVisible(showF && showD);
+    if (trailSplit_) trailSplit_->setVisible(n > 0 && !showF && !showD); // v0.3.2: only when nothing follows the coins
     if (!vertical_) {
         // ---- horizontal: 30 px toolbar strip across the top ----
         auto strip = r.removeFromTop(30);
@@ -952,6 +963,11 @@ void MainComponent::resized() {
             fngCell_->setBounds(r.removeFromRight(tickerbar::contextCellExtent(state.fngCellWidth, false)));
             if (n > 0) ctxBoundary(ctxSplitA_.get());
         }
+        // v0.3.2: both context cells hidden — the trailing divider
+        // takes divider A's place at the coin block's right edge,
+        // reserving the same 16 px boundary before the coins solve,
+        // so the last coin fills up to IT (never past it).
+        if (!showF && !showD && n > 0) ctxBoundary(trailSplit_.get());
         if (n > 0) {
             const int boundary = 16; // 10 px splitter + 6 px air
             std::vector<int> expl((size_t)n, 0);
@@ -1002,18 +1018,28 @@ void MainComponent::resized() {
         const int fngH = tickerbar::contextCellExtent(state.fngCellWidth, true);
         const int domH = tickerbar::contextCellExtent(state.domCellWidth, true);
         const int ctxReserve = (showF ? 16 + fngH + 6 : 0) + (showD ? 16 + domH + 6 : 0);
+        // v0.3.2: both context rows hidden — the trailing divider
+        // takes divider A's place under the last coin row; reserve
+        // its 16 px boundary from the coin solver like a context
+        // row's divider, and it lands in the strip the loop leaves
+        // after the last row.
+        const bool showTrail = n > 0 && !showF && !showD;
+        const int trailReserve = showTrail ? 16 : 0;
         if (n > 0) {
             std::vector<int> expl((size_t)n, 0);
             for (int i = 0; i < n; ++i) {
                 auto it = state.cellWidths.find(cells_[(size_t)i]->symbol);
                 if (it != state.cellWidths.end()) expl[(size_t)i] = it->second;
             }
-            auto heights = tickerbar::solveCellWidths(r.getHeight() - ctxReserve, boundary, expl, 56);
+            auto heights = tickerbar::solveCellWidths(r.getHeight() - ctxReserve - trailReserve, boundary, expl, 56);
             for (int i = 0; i < n; ++i) {
                 placeRow(cells_[(size_t)i].get(), heights[(size_t)i]);
                 if (i + 1 < n && i < (int)splitters_.size()) {
                     splitters_[(size_t)i]->verticalBar = true;
                     splitters_[(size_t)i]->setBounds(r.getX(), r.getY() + 3, r.getWidth(), 10);
+                } else if (showTrail && i == n - 1 && trailSplit_) {
+                    trailSplit_->verticalBar = true;
+                    trailSplit_->setBounds(r.getX(), r.getY() + 3, r.getWidth(), 10);
                 }
                 r.removeFromTop(boundary);
             }
@@ -1117,6 +1143,24 @@ void MainComponent::onContextSplitterDrag(bool coinsPair, int delta) {
     }
     saveSettings();
     resized();
+}
+
+// --- trailing divider (v0.3.2). Shown only when no context cell
+// follows the coin block, so its pair is the last coin cell
+// against the bar end itself: dragging resizes the WINDOW along
+// the bar axis (clamped to the same limits resized() hands the
+// window), and the solver's fill rule hands the gained/lost
+// extent to the last coin cell. The window's resized notification
+// persists the new bounds (notifyWindowGeometryChanged) — no
+// extra save is needed here. ---
+void MainComponent::onTrailingSplitterDrag(int delta) {
+    if (delta == 0) return;
+    auto* w = findParentComponentOfClass<juce::DocumentWindow>();
+    if (w == nullptr) return;
+    auto b = w->getBounds();
+    if (vertical_) b.setHeight(tickerbar::trailingWindowExtent(b.getHeight(), delta, 340, 3840));
+    else b.setWidth(tickerbar::trailingWindowExtent(b.getWidth(), delta, minimumBarWidth(), 3840));
+    w->setBounds(b);
 }
 
 // --- cell drag arbitration (v0.3.0 item 9): the press decides by
@@ -1322,6 +1366,16 @@ void MainComponent::settingsChanged(bool watchlistToo) {
     repaint();
 }
 
+// v0.3.2: Settings > "Reset layout to defaults" — the core helper
+// restores only the layout fields (cells visible, widths default,
+// factory coin order); the watchlist-too apply rebuilds the cells
+// in the restored order, persists, and defers a settings-sheet
+// rebuild so the sheet shows the reset state.
+void MainComponent::resetLayoutToDefaults() {
+    tickerbar::resetLayoutToDefaults(state);
+    settingsChanged(true);
+}
+
 void MainComponent::rebuildSettingsDeferred() {
     // The settings content owns the very button whose click may have
     // triggered this (Remove/Add) — rebuilding it synchronously would
@@ -1413,9 +1467,13 @@ int MainComponent::minimumBarWidth() const {
     // Context cells (post-v0.3.0): each VISIBLE one contributes
     // its effective width plus its 16 px divider boundary; a
     // hidden cell contributes nothing — the floor shrinks with it.
+    // v0.3.2: with BOTH hidden, the trailing divider's boundary
+    // takes their place at the floor (the coins solve into 16 px
+    // less, so the floor must still cover their minimums).
     int ctxW = 0;
     if (state.showFearGreed) ctxW += tickerbar::contextCellExtent(state.fngCellWidth, false) + 16;
     if (state.showBtcDominance) ctxW += tickerbar::contextCellExtent(state.domCellWidth, false) + 16;
+    if (!state.showFearGreed && !state.showBtcDominance) ctxW += 16;
     const int chrome = 16 /*outer pad*/ + 24 /*status dot*/ + 92 + 44 + 70 /*wordmark + version + status*/
                      + 76 + 52 + 76 + 76 + 64 + 56 + 62 + 72 + 68 + 26 + 46 + 44 /*the v0.3.0 cluster + its gaps*/
                      + ctxW;

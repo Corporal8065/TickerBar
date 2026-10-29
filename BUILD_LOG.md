@@ -2,6 +2,33 @@
 
 # TickerBar — BUILD LOG
 
+## v0.3.2 (2026-10-29) — Vishona's follow-ups: layout fill, trailing divider, reset
+
+Field fixes from Vishona's first v0.3.1 session, via #crypto-book.
+Per-item record in REQUESTS.md. Core suite 437 → 455 checks, 0
+failures; app layer proven by the push's Actions build. Released
+as v0.3.2 — Milo ships Vishona's bar changes per Jackson's
+standing instruction (2026-10-29).
+
+- **Dead space right of the coins — fixed at the root.** The
+  width solver only spread leftover space among auto cells; once
+  every coin carried a dragged explicit width (the steady state,
+  and divider A persists the last coin's width too) the surplus
+  was assigned to nobody. `solveCellWidths` now hands it to the
+  last cell, the same fill-exactly rule the auto path always had
+  — hiding both context cells now lets the coins expand into the
+  freed width instead of stranding it.
+- **Trailing divider.** When no context cell follows the coins,
+  a divider now sits right of the last coin (where A vanished
+  with the hidden cells). It trades the last cell against the
+  bar end: dragging resizes the window along the bar axis and
+  the fill rule hands the change to the last cell. Both
+  orientations; `minimumBarWidth()` counts its boundary.
+- **Reset layout to defaults.** Settings > Context cells gains
+  the button: every cell shown, all dragged widths forgotten,
+  coin order back to BTC / ETH / HYPE — layout only; coins,
+  alerts, theme and poll settings are kept.
+
 ## v0.3.1 (2026-10-29) — Vishona's context-cell request
 
 Hide/show toggles (Settings > Context cells) plus draggable,

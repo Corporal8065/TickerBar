@@ -6,7 +6,7 @@ juce_add_binary_data(TickerBarAssets
         ../assets/click-bloop.wav
         ../assets/click-sparkle.wav)
 
-juce_add_gui_app(TickerBar PRODUCT_NAME "TickerBar" VERSION "0.3.1"
+juce_add_gui_app(TickerBar PRODUCT_NAME "TickerBar" VERSION "0.3.2"
     COMPANY_NAME "TickerBar" BUNDLE_ID "com.tickerbar.app"
     ICON_BIG "icon/icon_big.png" ICON_SMALL "icon/icon_small.png")
 target_sources(TickerBar PRIVATE
@@ -19,7 +19,7 @@ target_sources(TickerBar PRIVATE
 target_include_directories(TickerBar PRIVATE Source ${CMAKE_CURRENT_SOURCE_DIR}/../core/include)
 target_compile_definitions(TickerBar PRIVATE
     JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_APPLICATION_NAME_STRING="TickerBar"
-    JUCE_APPLICATION_VERSION_STRING="0.3.1"
+    JUCE_APPLICATION_VERSION_STRING="0.3.2"
     # NOMINMAX (MeterBar v0.12.1 lesson): windows.h defines min/max as
     # macros that mangle std::min/std::max call sites on MSVC.
     NOMINMAX)

@@ -4,6 +4,65 @@ Verification rule (Jackson, 2026-10-29): every item is DONE only with
 proof — the full core suite green after the change, new checks for new
 behaviour, and errors recorded here with their actual text, never hidden.
 
+## v0.3.2 (2026-10-29) — Vishona's follow-ups, via #crypto-book
+
+- **Coins fill the space when the context cells are hidden.**
+  Her words: "after removing the fear/greed and dominance
+  sections the hype, eth, and btc tickers cannot move to the
+  right to fill space and leaves too much, there also itsnt a
+  draggable section to the right of the hype ticker." Root
+  cause: `solveCellWidths` distributed leftover width only
+  among cells WITHOUT an explicit width. Every divider drag
+  persists explicit widths for both sides of the pair (and the
+  v0.3.1 context divider A persists the last coin's width too),
+  so her bar was all-explicit: the solver returned the widths
+  verbatim and the remainder — the ~256 px the hidden context
+  cells freed — belonged to no cell. Fix in the core solver:
+  when every cell is explicit and the sum undershoots the
+  strip, the last cell absorbs the surplus (the fill-exactly
+  rule the auto path always had). One solver serves both
+  orientations, so vertical stacks fill downward the same way.
+  Explicit overshoot still stands (the window floor keeps it
+  out of the app; the solver never shrinks a user's drag).
+- **A draggable divider right of the last coin.** Divider A
+  only exists next to a visible context cell, so hiding both
+  removed the only handle right of HYPE. New trailing divider
+  (`trailSplit_`, the same CellSplitter): shown exactly when no
+  context cell follows the coins, placed at the coin block's
+  end with the same 16 px boundary (reserved from the solver,
+  counted by `minimumBarWidth()`). Its pair is the last coin
+  against the bar end, so dragging it resizes the window along
+  the bar axis — clamped by the core `trailingWindowExtent`
+  to the window's own limits — and the fill rule hands the
+  change to the last coin cell. The window's resize
+  notification persists the new bounds. Vertical mode mirrors
+  it under the last coin row (the stored extent doubles as
+  height, as everywhere else).
+- **"Reset to defaults" button.** Her words: "there also
+  should be a "reset to defaults" button somewhere". Added to
+  Settings > Context cells as "Reset layout to defaults",
+  backed by the pure-core `resetLayoutToDefaults`: context
+  toggles back on, `cellWidths` cleared, `fngCellWidth` /
+  `domCellWidth` back to 0, and the coin order restored to
+  the factory BTC / ETH / HYPE sequence. Scoped to layout
+  only — watchlist membership (extra symbols keep their
+  relative order after the trio), alerts, poll interval,
+  theme and window settings are NOT touched. Applies through
+  the normal path: `settingsChanged(true)` (apply + persist +
+  rebuild cells in the restored order + deferred sheet
+  rebuild, so the sheet shows the reset state).
+- Proof: core suite 437 → 455 checks, 0 failures (18 new
+  checks: the all-explicit fill incl. exact-fit / overshoot /
+  single-cell / mixed cases, the trailing-extent clamp, and
+  the reset restoring layout fields while leaving watchlist
+  extras, alerts and other settings untouched). The JUCE app
+  layer cannot be compiled on this VM — its proof is the
+  push's GitHub Actions Windows build, as with prior rounds.
+  Released as v0.3.2: version bumped in the same spots the
+  v0.3.1 bump touched and tagged; the tag's Actions run
+  builds and publishes the release. (Milo ships Vishona's
+  bar changes per Jackson's 2026-10-29 standing instruction.)
+
 ## v0.3.1 (2026-10-29) — Vishona's first request, via #crypto-book
 
 - **Context cells: hide/show + adjustable width.** Fear & Greed and

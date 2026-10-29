@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
@@ -50,4 +51,29 @@ struct TickerState {
     int fngCellWidth = 0;
     int domCellWidth = 0;
 };
+
+// RESET LAYOUT TO DEFAULTS (v0.3.2, Vishona's request) — restores
+// ONLY the layout/presentation fields: every cell visible again
+// (the context toggles), every dragged cell extent forgotten
+// (coin widths + context widths back to auto/default), and the
+// coin order back to the factory BTC / ETH / HYPE sequence.
+// Watchlist MEMBERSHIP is not layout: extra symbols are kept, in
+// their current relative order, after the factory trio; alerts,
+// poll interval, theme and every other setting are untouched.
+inline void resetLayoutToDefaults(TickerState& s) {
+    s.cellWidths.clear();
+    s.fngCellWidth = 0;
+    s.domCellWidth = 0;
+    s.showFearGreed = true;
+    s.showBtcDominance = true;
+    const std::vector<std::string> factory = TickerState{}.watchlist;
+    std::vector<std::string> ordered;
+    for (auto& sym : factory)
+        if (std::find(s.watchlist.begin(), s.watchlist.end(), sym) != s.watchlist.end())
+            ordered.push_back(sym);
+    for (auto& sym : s.watchlist)
+        if (std::find(factory.begin(), factory.end(), sym) == factory.end())
+            ordered.push_back(sym);
+    s.watchlist = ordered;
+}
 } // namespace tickerbar

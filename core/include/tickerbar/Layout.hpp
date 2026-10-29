@@ -69,6 +69,13 @@ inline int fullCoinCellWidth(int symbolTextW, int pctTextW) {
 // cells share the strip: cells with a user-dragged explicit width
 // keep it (clamped to minW), the rest split what remains equally
 // (the last auto cell absorbs rounding so the row fills exactly).
+// v0.3.2: when EVERY cell carries an explicit width and their sum
+// undershoots the strip, the LAST cell absorbs the surplus — the
+// row still fills exactly. Without this, the all-explicit state
+// (the steady state after divider drags, which persist both sides
+// of a pair) left the remainder unassigned: dead space right of
+// the last cell, worst after the context cells were hidden and
+// freed their width (Vishona's v0.3.1 field report).
 inline std::vector<int> solveCellWidths(int total, int gap, const std::vector<int>& explicitW, int minW) {
     const int n = (int)explicitW.size();
     std::vector<int> out((size_t)n, 0);
@@ -88,8 +95,21 @@ inline std::vector<int> solveCellWidths(int total, int gap, const std::vector<in
         for (int i = 0; i < n; ++i) if (explicitW[(size_t)i] <= 0) { out[(size_t)i] = each; lastAuto = i; }
         const int remainder = (avail - fixedSum) - each * autos;
         if (lastAuto >= 0 && remainder > 0) out[(size_t)lastAuto] += remainder;
+    } else if (fixedSum < avail) {
+        out[(size_t)n - 1] += avail - fixedSum; // all explicit, room to spare: the last cell fills it
     }
     return out;
+}
+
+// TRAILING DIVIDER (v0.3.2) — the divider right of the last coin
+// cell when no context cell follows it. It trades the last cell's
+// extent against the WINDOW's extent along the bar axis: dragging
+// it resizes the window (clamped to the window's own limits) and
+// the solver's fill rule hands the change to the last cell. The
+// pure clamp lives here so the tests pin it.
+inline int trailingWindowExtent(int current, int delta, int minExtent, int maxExtent) {
+    const int v = current + delta;
+    return v < minExtent ? minExtent : (v > maxExtent ? maxExtent : v);
 }
 
 // Dragging the divider between two adjacent cells: the pair's total

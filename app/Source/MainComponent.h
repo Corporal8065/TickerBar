@@ -78,6 +78,7 @@ public:
     tickerbar::AlertLevels levelsFor(const std::string& symbol) const;
     void setAlerts(const std::string& symbol, double above, double below);
     void settingsChanged(bool watchlistToo); // apply + persist; watchlistToo also rebuilds cells and the client list
+    void resetLayoutToDefaults();       // v0.3.2: Settings button — layout fields only (core resetLayoutToDefaults)
     void rebuildSettingsDeferred();
     void notifyWindowGeometryChanged(); // MainWindow moved/resized feed (reserve-machine events, v0.2.0)
     int minimumBarWidth() const;        // supported-width floor: every cell's % fully visible (Layout.hpp)
@@ -100,6 +101,7 @@ private:
     void rebuildCells();
     void rebuildSplitters();
     void onContextSplitterDrag(bool coinsPair, int delta); // coinsPair: A (coins<->context); else B (FNG<->DOM)
+    void onTrailingSplitterDrag(int delta); // v0.3.2: the bar-end divider — resizes the window along the bar axis
     void refreshData();
     void refreshContext();
     void refreshStatus();
@@ -146,6 +148,11 @@ private:
     // from BTC dominance. Created once; resized() places them and
     // drives their visibility from the show* toggles.
     std::unique_ptr<CellSplitter> ctxSplitA_, ctxSplitB_;
+    // Trailing divider (v0.3.2): sits right of the last coin cell
+    // when NO context cell follows it; dragging it resizes the
+    // window along the bar axis and the solver's fill rule hands
+    // the change to the last coin cell.
+    std::unique_ptr<CellSplitter> trailSplit_;
     std::map<std::string, tickerbar::AlertTracker> trackers_;
     std::map<std::string, double> lastPrices_; // mascot tick triggers (item 18)
     std::unique_ptr<TickerSettingsWindow> settingsWin_;

@@ -771,6 +771,55 @@ int main() {
         auto cp2 = adjustPairWidths(112, 112, -500, kContextCellMin);
         CHECK(cp2.first == kContextCellMin && cp2.second == 224 - kContextCellMin);
     }
+    // ---------- v0.3.2: layout fill + trailing divider + reset (Vishona's follow-ups) ----------
+    {
+        // THE FIELD BUG: every coin explicit (the post-drag steady
+        // state) and the context cells hidden — the explicit sum
+        // undershoots the strip and the leftover was dead space.
+        // Now the last cell absorbs it and the row fills exactly.
+        auto f = solveCellWidths(1000, 16, {200, 200, 200}, 90);
+        CHECK(f[0] == 200 && f[1] == 200);
+        CHECK(f[2] == 568); // 1000 - 2*16 gaps - 400 = 568: the last cell fills
+        CHECK(f[0] + f[1] + f[2] + 2 * 16 == 1000);
+        // exact fit: nothing to absorb, widths stand
+        auto fx = solveCellWidths(632, 16, {200, 200, 200}, 90);
+        CHECK(fx[0] == 200 && fx[1] == 200 && fx[2] == 200);
+        // overshoot: explicit widths stand (the window floor keeps
+        // this out of the app; the solver never shrinks a drag)
+        auto fo = solveCellWidths(500, 16, {200, 200, 200}, 90);
+        CHECK(fo[0] == 200 && fo[1] == 200 && fo[2] == 200);
+        // a single explicit cell fills the whole strip
+        auto f1 = solveCellWidths(800, 16, {300}, 90);
+        CHECK(f1.size() == 1 && f1[0] == 800);
+        // mixed explicit/auto still shares the rest (pre-v0.3.2 rule)
+        auto fm = solveCellWidths(1000, 16, {200, 0, 200}, 90);
+        CHECK(fm[0] == 200 && fm[1] == 568 && fm[2] == 200);
+        // trailing-divider clamp: the window extent follows the
+        // drag inside its limits and stops at them
+        CHECK(trailingWindowExtent(1000, 50, 600, 3840) == 1050);
+        CHECK(trailingWindowExtent(1000, -50, 600, 3840) == 950);
+        CHECK(trailingWindowExtent(1000, -9999, 600, 3840) == 600);
+        CHECK(trailingWindowExtent(1000, 9999, 600, 3840) == 3840);
+        // reset: layout fields back to factory, nothing else moves
+        TickerState s;
+        s.watchlist = { "HYPE", "SOL", "BTC", "ETH" }; // scrambled + one extra
+        s.cellWidths = { { "BTC", 300 }, { "HYPE", 150 } };
+        s.fngCellWidth = 200; s.domCellWidth = 180;
+        s.showFearGreed = false; s.showBtcDominance = false;
+        s.pollSec = 60; s.themeName = "Anime"; s.clickSounds = true;
+        AlertLevels lv; lv.above = 100000.0; s.alerts["BTC"] = lv;
+        resetLayoutToDefaults(s);
+        CHECK(s.cellWidths.empty());
+        CHECK(s.fngCellWidth == 0 && s.domCellWidth == 0);
+        CHECK(s.showFearGreed && s.showBtcDominance);
+        CHECK(s.watchlist == std::vector<std::string>({ "BTC", "ETH", "HYPE", "SOL" })); // trio restored, extra kept
+        CHECK(s.pollSec == 60 && s.themeName == "Anime" && s.clickSounds); // untouched settings
+        CHECK(s.alerts.count("BTC") == 1 && s.alerts["BTC"].above == 100000.0); // alerts untouched
+        // reset on a factory state is a no-op
+        TickerState d2;
+        resetLayoutToDefaults(d2);
+        CHECK(d2.watchlist == TickerState{}.watchlist && d2.cellWidths.empty());
+    }
 
     std::printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
