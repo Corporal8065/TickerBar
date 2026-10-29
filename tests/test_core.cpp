@@ -1,0 +1,342 @@
+// TickerBar core tests — plain asserts, no framework (MeterBar idiom).
+// Fixtures are REAL payloads captured 2026-10-29 from the v0.1.1
+// sources (Coinbase Exchange public API + CoinGecko markets), plus
+// hand-broken variants and a captured CoinGecko 429 body.
+#include <cstdio>
+#include <cmath>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <tickerbar/Json.hpp>
+#include <tickerbar/Model.hpp>
+#include <tickerbar/MarketParse.hpp>
+#include <tickerbar/ContextParse.hpp>
+#include <tickerbar/Format.hpp>
+#include <tickerbar/Alerts.hpp>
+#include <tickerbar/Stale.hpp>
+#include <tickerbar/Arrange.hpp>
+#include <tickerbar/State.hpp>
+#ifndef FIXTURES_DIR
+#define FIXTURES_DIR "tests/fixtures"
+#endif
+static int failures = 0, checks = 0;
+#define CHECK(cond) do{ ++checks; if(!(cond)){ ++failures; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond);} else { std::printf("ok   %s\n", #cond);} }while(0)
+static std::string readFile(const std::string& name) {
+    std::ifstream in(std::string(FIXTURES_DIR) + "/" + name, std::ios::binary);
+    std::stringstream ss; ss << in.rdbuf(); return ss.str();
+}
+static bool near(double a, double b, double eps = 1e-9) { return std::abs(a - b) < eps; }
+
+int main() {
+    using namespace tickerbar;
+
+    // ---------- Json: basics ----------
+    {
+        auto v = parseJson(R"({"a": [1, 2.5, "x", true, null], "b": {"c": -3e2}})");
+        CHECK(v && v->isObject());
+        const Json* a = v->find("a");
+        CHECK(a && a->isArray() && a->array.size() == 5);
+        CHECK(a->at(0)->asNumber() && near(*a->at(0)->asNumber(), 1.0));
+        CHECK(a->at(1)->asNumber() && near(*a->at(1)->asNumber(), 2.5));
+        CHECK(a->at(2)->asString() && *a->at(2)->asString() == "x");
+        CHECK(a->at(3)->asBool() && *a->at(3)->asBool());
+        CHECK(a->at(4)->isNull());
+        const Json* c = v->find("b")->find("c");
+        CHECK(c && c->asNumber() && near(*c->asNumber(), -300.0));
+        CHECK(v->find("zzz") == nullptr);
+        // string escapes + \u
+        auto s = parseJson(R"("a\nbé")");
+        CHECK(s && s->asString() && *s->asString() == std::string("a\nb\xc3\xa9"));
+        // numeric-string coercion (Coinbase style)
+        auto n = parseJson(R"("79736.11")");
+        CHECK(n && n->asNumber() && near(*n->asNumber(), 79736.11));
+        auto junk = parseJson(R"("12x")");
+        CHECK(junk && !junk->asNumber()); // trailing junk is not a number
+    }
+    // ---------- Json: malformed input never parses, never crashes ----------
+    {
+        CHECK(!parseJson(""));
+        CHECK(!parseJson("{"));
+        CHECK(!parseJson("[1,2"));
+        CHECK(!parseJson(R"({"a":})"));
+        CHECK(!parseJson("[1,2] trailing"));
+        CHECK(!parseJson("nul"));
+        CHECK(!parseJson(readFile("garbage.json")));
+        CHECK(!parseJson(readFile("cb_stats_truncated.json")));
+        // depth bomb: 5000 nested arrays must fail cleanly, not overflow the stack
+        std::string deep(5000, '[');
+        CHECK(!parseJson(deep));
+    }
+    // ---------- Coinbase stats: the real fixtures ----------
+    {
+        auto btc = parseCoinbaseStats(readFile("cb_stats_btc.json"), "BTC");
+        CHECK(btc.has_value());
+        CHECK(btc && btc->hasData && btc->name == "BTC");
+        CHECK(btc && near(btc->price, 79736.11, 1e-6));       // "last" at capture
+        CHECK(btc && near(btc->open24h, 80873.62, 1e-6));     // "open" = price 24h ago
+        CHECK(btc && near(btc->high24h, 81715.01, 1e-6));
+        CHECK(btc && near(btc->low24h, 79586.17, 1e-6));
+        // volume arrives in COIN units and is stored as USD (x last)
+        CHECK(btc && near(btc->dayVolumeUsd, 5391.14478694 * 79736.11, 1.0));
+        CHECK(btc && btc->dayVolumeUsd > 1e8);                // majors trade > $100M/day
+        auto pct = btc ? changePct(btc->price, btc->open24h) : std::nullopt;
+        CHECK(pct && near(*pct, (79736.11 / 80873.62 - 1.0) * 100.0, 1e-6));
+        auto eth = parseCoinbaseStats(readFile("cb_stats_eth.json"), "eth"); // symbol case-insensitive
+        CHECK(eth && eth->name == "ETH" && near(eth->price, 2304.94, 1e-6));
+    }
+    // ---------- Coinbase stats: broken payloads rejected ----------
+    {
+        CHECK(!parseCoinbaseStats(readFile("cb_stats_wrongtypes.json"), "BTC"));   // object/null fields
+        CHECK(!parseCoinbaseStats(readFile("cb_stats_missing_last.json"), "BTC")); // no price at all
+        CHECK(!parseCoinbaseStats(readFile("cb_stats_zerolast.json"), "BTC"));     // a 0 price is not data
+        CHECK(!parseCoinbaseStats(readFile("cb_stats_truncated.json"), "BTC"));
+        CHECK(!parseCoinbaseStats(readFile("garbage.json"), "BTC"));
+        CHECK(!parseCoinbaseStats("{}", "BTC"));
+        CHECK(!parseCoinbaseStats("[]", "BTC"));
+    }
+    // ---------- Coinbase candles: newest-first in, ascending out ----------
+    {
+        auto cs = parseCoinbaseCandles(readFile("cb_candles_btc.json"));
+        CHECK(cs.has_value());
+        CHECK(cs && cs->size() >= 24);                        // 30 rows in the captured window
+        bool sane = true, ascending = true;
+        for (size_t i = 0; i < cs->size(); ++i) {
+            auto& c = (*cs)[i];
+            if (!(c.high >= c.low && c.close >= c.low - 1e-9 && c.close <= c.high + 1e-9)) sane = false;
+            if (i && c.tOpenMs <= (*cs)[i - 1].tOpenMs) ascending = false;
+        }
+        CHECK(sane);
+        CHECK(ascending);                                     // the API's newest-first order was reversed
+        CHECK(cs && near(cs->back().close, 79775.68, 1e-6));  // newest captured close is last
+        auto hi = candlesHigh(*cs), lo = candlesLow(*cs);
+        CHECK(hi && lo && *hi >= *lo);
+        double mx = 0; for (auto& c : *cs) mx = c.high > mx ? c.high : mx;
+        CHECK(hi && near(*hi, mx, 1e-6));
+        auto empty = parseCoinbaseCandles(readFile("cb_candles_empty.json"));
+        CHECK(empty && empty->empty());                       // zero candles is VALID (nothing to draw)
+        CHECK(!candlesHigh(*empty).has_value());
+        CHECK(!parseCoinbaseCandles(readFile("cb_candles_brokenrow.json"))); // short/string row -> reject the set
+        CHECK(!parseCoinbaseCandles(readFile("garbage.json")));
+    }
+    // ---------- Coinbase products: the validation universe ----------
+    {
+        auto syms = parseCoinbaseProducts(readFile("cb_products.json"));
+        CHECK(syms.has_value());
+        CHECK(syms && syms->size() >= 400);                   // 405 USD-online bases at capture
+        auto has = [&](const char* s){ return syms && std::find(syms->begin(), syms->end(), s) != syms->end(); };
+        CHECK(has("BTC") && has("ETH") && has("SOL"));
+        CHECK(!has("ACX"));                                   // ACX-USD exists but is delisted -> excluded
+        CHECK(!has("NOTACOIN"));
+        CHECK(syms && std::is_sorted(syms->begin(), syms->end()));
+        CHECK(!parseCoinbaseProducts(readFile("cb_products_wrongtypes.json"))); // object, not array
+        CHECK(!parseCoinbaseProducts(readFile("garbage.json")));
+        CHECK(!parseCoinbaseProducts("{}"));
+    }
+    // ---------- Routing: who serves which symbol, and their stale clocks ----------
+    {
+        CHECK(sourceForSymbol("HYPE") == PriceSource::CoinGecko);
+        CHECK(sourceForSymbol("hype") == PriceSource::CoinGecko);
+        CHECK(sourceForSymbol("BTC") == PriceSource::Coinbase);
+        CHECK(sourceForSymbol("ETH") == PriceSource::Coinbase);
+        CHECK(coinGeckoIdForSymbol("HYPE") && *coinGeckoIdForSymbol("HYPE") == "hyperliquid");
+        CHECK(!coinGeckoIdForSymbol("BTC"));
+        CHECK(staleAfterSecFor("BTC") == 60.0);               // 3x the 20 s Coinbase poll
+        CHECK(staleAfterSecFor("HYPE") == 180.0);             // 3x the ~60 s CoinGecko poll
+        CHECK(feedStatus(true, 120.0, staleAfterSecFor("HYPE")) == FeedStatus::Live);  // mid-cycle HYPE is LIVE
+        CHECK(feedStatus(true, 181.0, staleAfterSecFor("HYPE")) == FeedStatus::Stale);
+        CHECK(feedStatus(false, 0.0, staleAfterSecFor("HYPE")) == FeedStatus::Down);
+    }
+    // ---------- CoinGecko markets: the real HYPE fixture ----------
+    {
+        auto qs = parseCoinGeckoMarkets(readFile("cg_markets_hype.json"));
+        CHECK(qs.has_value());
+        CHECK(qs && qs->size() == 1);
+        const GeckoQuote* q = qs ? &qs->front() : nullptr;
+        CHECK(q && q->ctx.hasData && q->ctx.name == "HYPE");  // lowercase "hype" uppercased
+        CHECK(q && near(q->ctx.price, 78.54, 1e-6));
+        // open24h is derived from the source's own 24h % (-3.39382 at capture)
+        CHECK(q && near(q->ctx.open24h, 78.54 / (1.0 + -3.39382 / 100.0), 1e-4));
+        CHECK(q && q->ctx.open24h > q->ctx.price);            // a down day: reference sits above price
+        auto pct = q ? changePct(q->ctx.price, q->ctx.open24h) : std::nullopt;
+        CHECK(pct && near(*pct, -3.39382, 1e-3));             // round-trips to the source's own number
+        CHECK(q && near(q->ctx.high24h, 82.35, 1e-6));
+        CHECK(q && near(q->ctx.low24h, 78.11, 1e-6));
+        CHECK(q && near(q->ctx.dayVolumeUsd, 793995817.0, 1.0));
+        CHECK(q && near(q->ctx.marketCapUsd, 18811468566.0, 1000.0));
+        CHECK(q && q->sparkline7d.size() == 168);             // 7 days of hourly points
+        CHECK(q && near(q->sparkline7d.back(), 78.63113662504989, 1e-9));
+        // the chart path: trailing 24h (25 hourly points) as candles
+        auto candles = q ? candlesFromHourlySeries(q->sparkline7d, 1793246400000LL, 25) : std::vector<Candle>{};
+        CHECK(candles.size() == 25);
+        bool asc = true, flat = true;
+        for (size_t i = 0; i < candles.size(); ++i) {
+            if (i && candles[i].tOpenMs - candles[i - 1].tOpenMs != 3600000LL) asc = false;
+            if (!(candles[i].open == candles[i].close && candles[i].high == candles[i].close
+                  && candles[i].low == candles[i].close)) flat = false; // closes only — no invented range
+        }
+        CHECK(asc);
+        CHECK(flat);
+        CHECK(!candles.empty() && near(candles.back().close, q->sparkline7d.back(), 1e-9));
+        CHECK(candlesFromHourlySeries({}, 1793246400000LL, 25).empty());
+        CHECK(candlesFromHourlySeries(q->sparkline7d, 1793246400000LL, 100000).size() == 168); // count caps at series
+    }
+    // ---------- CoinGecko markets: broken payloads rejected ----------
+    {
+        CHECK(!parseCoinGeckoMarkets(readFile("cg_markets_wrongtypes.json"))); // price as object
+        CHECK(!parseCoinGeckoMarkets(readFile("cg_markets_ratelimit.json"))); // captured 429 body: no array
+        CHECK(!parseCoinGeckoMarkets(readFile("garbage.json")));
+        CHECK(!parseCoinGeckoMarkets("{}"));
+        auto empty = parseCoinGeckoMarkets(readFile("cg_markets_empty.json"));
+        CHECK(empty && empty->empty());                       // an empty page is valid (nothing quoted)
+    }
+    // ---------- Model helpers ----------
+    {
+        CHECK(changePct(110, 100) && near(*changePct(110, 100), 10.0));
+        CHECK(changePct(90, 100) && near(*changePct(90, 100), -10.0));
+        CHECK(!changePct(100, 0));       // no reference -> no invented number
+        CHECK(!changePct(100, -5));
+        auto flat = normalizeSeries({ 7.0, 7.0, 7.0 });
+        CHECK(flat.size() == 3 && flat[0] == 0.5f && flat[2] == 0.5f);
+        auto ramp = normalizeSeries({ 0.0, 5.0, 10.0 });
+        CHECK(ramp.size() == 3 && ramp[0] == 0.0f && ramp[1] == 0.5f && ramp[2] == 1.0f);
+        CHECK(normalizeSeries({}).empty());
+    }
+    // ---------- Format: pinned strings ----------
+    {
+        CHECK(formatPrice(97123.4) == "$97,123.40");
+        CHECK(formatPrice(3412.5) == "$3,412.50");
+        CHECK(formatPrice(38.423) == "$38.42");
+        CHECK(formatPrice(1000000.0) == "$1,000,000.00");
+        CHECK(formatPrice(0.123456) == "$0.1235");
+        CHECK(formatPrice(0.00123456) == "$0.001235");
+        CHECK(decimalsForPrice(2.5) == 2 && decimalsForPrice(0.5) == 4 && decimalsForPrice(0.005) == 6);
+        CHECK(formatPct(1.234) == "+1.23%");
+        CHECK(formatPct(-0.456) == "-0.46%");
+        CHECK(formatPct(0.0) == "+0.00%");
+        CHECK(formatVolume(1.23e9) == "$1.23B");
+        CHECK(formatVolume(4.567e8) == "$456.70M");
+        CHECK(formatVolume(12345.0) == "$12.35K");
+        CHECK(formatVolume(999.4) == "$999");
+    }
+    // ---------- Alerts: crossing state machine ----------
+    {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        AlertLevels lv; lv.above = 100.0; lv.below = 90.0;
+        AlertTracker tr;
+        CHECK(tr.step(lv, 95.0) == AlertNone);            // first tick only primes
+        CHECK(tr.step(lv, 99.0) == AlertNone);
+        CHECK(tr.step(lv, 101.0) == AlertCrossedAbove);   // the cross
+        CHECK(tr.step(lv, 102.0) == AlertNone);           // stays above: quiet
+        CHECK(tr.step(lv, 100.0) == AlertNone);           // back at level: re-arms
+        CHECK(tr.step(lv, 100.5) == AlertCrossedAbove);   // crosses again: fires again
+        CHECK(tr.step(lv, 95.0) == AlertNone);
+        CHECK(tr.step(lv, 89.0) == AlertCrossedBelow);
+        CHECK(tr.step(lv, 88.0) == AlertNone);
+        CHECK(tr.step(lv, nan) == AlertNone);             // NaN tick ignored
+        CHECK(tr.step(lv, 89.5) == AlertNone);            // state survived the NaN (still below)
+        // starting already beyond a level must NOT fire (nothing crossed)
+        AlertTracker tr2;
+        CHECK(tr2.step(lv, 150.0) == AlertNone);
+        CHECK(tr2.step(lv, 151.0) == AlertNone);
+        // unset levels never fire
+        AlertLevels none;
+        AlertTracker tr3;
+        CHECK(tr3.step(none, 1.0) == AlertNone);
+        CHECK(tr3.step(none, 1e9) == AlertNone);
+        // reset() re-primes after an edit
+        tr.reset();
+        CHECK(tr.step(lv, 101.0) == AlertNone);
+    }
+    // ---------- Stale / backoff ----------
+    {
+        CHECK(feedStatus(false, 0) == FeedStatus::Down);
+        CHECK(feedStatus(false, 9999) == FeedStatus::Down);
+        CHECK(feedStatus(true, 0) == FeedStatus::Live);
+        CHECK(feedStatus(true, 60) == FeedStatus::Live);
+        CHECK(feedStatus(true, 61) == FeedStatus::Stale);
+        CHECK(feedStatus(true, 3600) == FeedStatus::Stale);
+        CHECK(retryDelaySec(0) == 0.0);
+        CHECK(retryDelaySec(1) == 5.0);
+        CHECK(retryDelaySec(2) == 10.0);
+        CHECK(retryDelaySec(3) == 20.0);
+        CHECK(retryDelaySec(4) == 40.0);
+        CHECK(retryDelaySec(5) == 60.0);
+        CHECK(retryDelaySec(12) == 60.0);
+    }
+    // ---------- Arrange math (ported rule) ----------
+    {
+        const IntRect mon{ 0, 0, 1920, 1080 };
+        IntRect fits{ 100, 200, 800, 600 };
+        CHECK(arrangeFit(fits, mon, 72) == fits);                       // already clear: untouched
+        IntRect under{ 100, 10, 800, 600 };
+        IntRect moved = arrangeFit(under, mon, 72);
+        CHECK(moved.y == 72 && moved.x == 100 && moved.w == 800);      // slid to just under the strip
+        IntRect huge{ -50, 0, 2500, 2000 };
+        IntRect shrunk = arrangeFit(huge, mon, 72);
+        CHECK(shrunk.w == 1920 && shrunk.h == 1008 && shrunk.x == 0 && shrunk.y == 72);
+        IntRect deg{ 0, 0, 0, 0 };
+        CHECK(arrangeFit(deg, mon, 72) == deg);                        // degenerate: unchanged
+        CHECK(arrangeFit(fits, mon, 5000) == fits);                    // strip eats the monitor: unchanged
+        // bottom-dock variant
+        IntRect low{ 100, 900, 800, 300 };
+        IntRect lifted = arrangeFitAbove(low, mon, 72);
+        CHECK(lifted.y + lifted.h == 1008 && lifted.x == 100);
+        IntRect high{ 100, 100, 800, 300 };
+        CHECK(arrangeFitAbove(high, mon, 72) == high);
+    }
+    // ---------- State defaults (spec pins) ----------
+    {
+        TickerState st;
+        CHECK(st.watchlist.size() == 3);
+        CHECK(st.watchlist[0] == "BTC" && st.watchlist[1] == "ETH" && st.watchlist[2] == "HYPE");
+        CHECK(st.reserveScreenSpace == false);
+        CHECK(st.alertSound == false);
+        CHECK(st.pinned == true);
+        CHECK(st.pollSec == 20);
+        CHECK(st.themeName == "Midnight Kids");
+        CHECK(st.backgroundOpacity == 1.0f);
+    }
+
+    // ---- market context: Fear & Greed (live fixture) ----
+    {
+        auto fg = parseFearGreed(readFile("fng_ok.json"));
+        CHECK(fg.has_value());
+        CHECK(fg && fg->value >= 0 && fg->value <= 100);
+        CHECK(fg && !fg->classification.empty());
+        CHECK(fg && fg->timestamp > 0);
+        CHECK(!parseFearGreed(readFile("fng_empty.json")));
+        CHECK(!parseFearGreed(readFile("fng_wrongtypes.json")));
+        CHECK(!parseFearGreed(readFile("fng_noclass.json")));
+        CHECK(!parseFearGreed(readFile("fng_truncated.json")));
+        CHECK(!parseFearGreed(readFile("garbage.json")));
+        CHECK(!parseFearGreed("{}"));
+        CHECK(!parseFearGreed("{\"data\":[{\"value\":\"140\",\"value_classification\":\"Greed\"}]}")); // out of range
+    }
+    // ---- market context: BTC dominance (live fixture) ----
+    {
+        auto dom = parseBtcDominance(readFile("coingecko_global.json"));
+        CHECK(dom.has_value());
+        CHECK(dom && *dom > 30.0 && *dom < 80.0);
+        CHECK(!parseBtcDominance(readFile("coingecko_wrongtypes.json")));
+        CHECK(!parseBtcDominance(readFile("coingecko_ratelimit.json")));
+        CHECK(!parseBtcDominance(readFile("garbage.json")));
+        CHECK(!parseBtcDominance("{}"));
+    }
+    // ---- context formatting + bands + staleness ----
+    {
+        CHECK(formatDominance(59.46) == "59.5%");
+        CHECK(formatDominance(50.04) == "50.0%");
+        CHECK(fngBandIndex(0) == 0 && fngBandIndex(24) == 0);
+        CHECK(fngBandIndex(25) == 1 && fngBandIndex(44) == 1);
+        CHECK(fngBandIndex(45) == 2 && fngBandIndex(55) == 2);
+        CHECK(fngBandIndex(56) == 3 && fngBandIndex(74) == 3);
+        CHECK(fngBandIndex(75) == 4 && fngBandIndex(100) == 4);
+        CHECK(contextStale(false, 0));
+        CHECK(!contextStale(true, 0));
+        CHECK(!contextStale(true, 900));
+        CHECK(contextStale(true, 901));
+    }
+
+    std::printf("\n%d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+}

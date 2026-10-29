@@ -1,0 +1,25 @@
+TickerBar v0.1.1 - crypto ticker bar (BTC / ETH / HYPE by default)
+
+v0.1.1 fixes v0.1's "no connection" on US PCs: v0.1 read prices from
+Hyperliquid, which blocks US IP addresses. Prices now come from
+Coinbase (BTC / ETH and any Coinbase USD pair) and CoinGecko (HYPE) -
+both work from the US. Prices are SPOT prices.
+
+START HERE:
+  1. Double-click build.bat in this folder (tickerbar-app).
+     It finds Visual Studio's CMake by itself, downloads JUCE 8 on
+     the first run (needs internet), builds the app, and runs the
+     core unit tests.
+  2. When it says DONE, double-click:
+       build-app\app\TickerBar_artefacts\Release\TickerBar.exe
+  3. The bar appears borderless and always-on-top with BTC / ETH /
+     HYPE live spot prices.
+
+Windows will probably show a blue SmartScreen prompt the first time
+(unsigned app): More info -> Run anyway. Normal for free software.
+
+Then read README_TEST.md - it walks through the field tests:
+dragging, click-a-coin detail, adding a coin, price alerts going off,
+the stale state when the network drops, and Reserve screen space.
+
+If the build fails, send Milo build-log.txt from this folder.
