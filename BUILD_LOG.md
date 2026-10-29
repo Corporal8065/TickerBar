@@ -1,5 +1,74 @@
 # TickerBar — BUILD LOG
 
+# TickerBar — BUILD LOG
+
+## v0.3.0 (2026-10-29) — the parity round (MeterBar feature family + field fixes)
+
+Everything MeterBar had that this bar didn't, ported in one round,
+plus the fixes from Jackson's live v0.2.1 field test. Pure-core suite
+343 → 426 checks, 0 failures (g++ on the VM); the JUCE app layer is
+verified by the GitHub Actions Windows build (green on the branch and
+re-verified on the tag) — no Windows live test was run by the builder.
+
+- **In-app updater (1).** MeterBar's flow ported: silent launch
+  check, "Update!" button in the toolbar when a release is newer,
+  full release notes in-app, download + byte-size + SHA-256 verify,
+  silent install, relaunch. The repo is public, so the anonymous
+  flow works; the releases-page fallback stays for any refusal.
+- **Named presets WITH position (2).** Presets save the full state
+  including the window rect; loading one moves the bar (clamped
+  on-screen). MeterBar's audit found it saved position but never
+  applied it on load — fixed there too (v0.20.1).
+- **Themes (3).** All five MeterBar themes verbatim (plus the legacy
+  Clean Dark kept as a sixth so saved choices don't change), and the
+  Pastel background style.
+- **Settings (4).** MeterBar's pink-plum sheet (#2A1E2E / #E04C89,
+  dark title bar) — Settings window only.
+- **UI click sounds (5).** MeterBar's click kit behind a Settings
+  toggle (default off); the toggle is the gate.
+- **Data colour schemes (6).** Sparkline + gain/loss pairs in
+  Family / Plasma / Inferno / Viridis / Magma, stops taken from
+  MeterBar's actual colour-map LUTs.
+- **Animated backgrounds (7).** Visualizer (MeterBar's particle
+  model, with the emitter refinement Jackson specified: transient-
+  triggered emitters on curved paths, strand shedding, distance
+  deceleration + colour drift, full-background blurred composite)
+  and the MiniMeters-style glow (near-black wash, three band blooms,
+  pinstripes, taste-capped). Palette controls in Settings.
+- **Vertical orientation (8).** Side-docked bars lay out truly
+  vertical (toolbar grid + full-width stacked cells).
+- **Cell reorder + widths (9, 10).** Drag a cell along the bar to
+  reorder (watchlist order persists); dividers between cells set
+  explicit widths (persist). Both solved in the pure core.
+- **Toolbar (11).** The full cluster now lives in a 30 px top strip
+  in MeterBar's exact order: Reserve | Link | Arrange | Restore |
+  Preset | Stack | Dock | Settings | Update! | _ | Quit.
+- **One-click Stack (12).** BarLink protocol BLK2: the initiator
+  broadcasts its edge + anchor; every linked bar computes the same
+  plan (pure core, canonical app order) and moves itself flush.
+- **Live linked opacity (13).** The bg-sync rules were already
+  synchronous; the repair forces one republication the moment Link
+  turns on (a stale "already published" marker could suppress the
+  first sync) and adoption repaints unconditionally.
+- **Volume MA + 3σ flags (16).** Detail chart: 52-bar volume moving
+  average line and flagged bars above mean + 3σ (population σ over
+  the trailing window incl. the current bar; needs ≥20 bars). The
+  honest feed-limit notes are unchanged.
+- **Cross-bar reactive glow (17).** When linked, MeterBar broadcasts
+  band energies + level over BarLink; this bar renders the glow in
+  GROUP space (the union rect of all linked bars) so the stack
+  reads as one surface. Standalone, an ambient driver runs it.
+  Honest scope: the wash/glow state is shared; visualizer particles
+  are rendered locally from the same triggers, not shared state.
+- **Mascot (18).** MeterBar's mascot cell + its actual asset files,
+  Anime theme only. Triggers here: bob on a watched price tick,
+  excited for 2 s on an alert crossing.
+- BarLink is now BLK2 in all three apps — mixed old/new binaries no
+  longer link (update all three together). Default height grew
+  (72 → 96) for the toolbar strip; a one-time migration lifts old
+  saved heights by 30 px. README gained the download-latest-release
+  link; the social preview card now carries the mascot.
+
 ## v0.2.0 (2026-10-29) — field-test fixes + detail charts + family release flow
 
 Built from Jackson's 2026-10-29 field test (his screenshot showed both
