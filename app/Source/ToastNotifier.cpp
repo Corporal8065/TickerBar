@@ -66,7 +66,12 @@ bool ToastNotifier::show(void* hwndV, const std::string& title, const std::strin
     if (!impl_->iconAdded) {
         auto nid = impl_->makeData(NIF_ICON | NIF_TIP | NIF_GUID);
         nid.guidItem = { 0x7b1c0de0, 0x7b1c, 0x4b1c, { 0x9e, 0x11, 0x54, 0x22, 0x10, 0x29, 0x7b, 0x01 } };
-        nid.hIcon = LoadIconW(nullptr, IDI_INFORMATION);
+        // MAKEINTRESOURCEW, not IDI_INFORMATION: this TU defines no
+        // UNICODE, so IDI_INFORMATION resolves to the ANSI macro
+        // (LPSTR) and MSVC rejects it for LoadIconW (C2664 — the
+        // v0.2.0 release-build failure, run 40843816422). 32513 is
+        // IDI_INFORMATION's resource id.
+        nid.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32513));
         copyWide(nid.szTip, ARRAYSIZE(nid.szTip), L"TickerBar price alerts");
         // NIF_GUID can fail on a first-ever registration race; retry flagless identity (hwnd+id).
         if (!Shell_NotifyIconW(NIM_ADD, &nid)) {

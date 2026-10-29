@@ -4,6 +4,52 @@ Verification rule (Jackson, 2026-10-29): every item is DONE only with
 proof — the full core suite green after the change, new checks for new
 behaviour, and errors recorded here with their actual text, never hidden.
 
+## v0.2.1 (2026-10-29, later the same night — Jackson's follow-up: TickerBar gets a working release)
+
+- **Missing-release root cause found and fixed.** The v0.2.0
+  Actions run (40843816422) failed at step 5 "Build Release" on a
+  compile error in the toast feature — full text in the Errors
+  section below. `ToastNotifier.cpp` called
+  `LoadIconW(nullptr, IDI_INFORMATION)`; this TU defines no
+  UNICODE, so `IDI_INFORMATION` resolves to the ANSI macro (LPSTR)
+  and MSVC rejects it for the wide API. The file's discipline is
+  explicit-W everywhere else; the fix follows it:
+  `LoadIconW(nullptr, MAKEINTRESOURCEW(32513))` (32513 is
+  IDI_INFORMATION's resource id), with the reason recorded in a
+  comment at the call. The rest of TickerBar's Windows sources were
+  scanned for the same pattern — no other occurrence.
+- This release also carries the shared-core fixes that landed on
+  main earlier tonight (section below): group-dock cross-axis
+  alignment and the background-sync hardening.
+- Version stamped 0.2.1 in root/app CMake, `Main.cpp`, the Inno
+  fallback, the window title and the About note; annotated tag
+  `v0.2.1` triggers the release workflow. Proof available here:
+  core suite 343 checks, 0 failures; `MainComponent.cpp`
+  syntax-checked clean. The Windows TU itself cannot be compiled
+  on this VM (no MinGW) — the tag's CI run is its proof, as it was
+  (in the negative) for v0.2.0.
+
+## Landed on main 2026-10-29 (SessionBar v0.2.1 fix round — first landed main-only, then released as v0.2.1 above per Jackson's follow-up)
+
+Shared-core corrections from Jackson's SessionBar field test, applied
+identically in all three repos:
+
+- **Group-dock cross-axis alignment:** `groupDockRect` moved a
+  stacked follower along the dock axis only, so a bar stacked under
+  a sideways-moved peer kept its own x and no longer sat under it.
+  Stacking now aligns left edges (top/bottom stacks) / top edges
+  (left/right stacks). New core checks pin it.
+- **Background sync hardening:** the publish/adopt decisions moved
+  into the pure core (`BgSyncState`, `bgIsLocalChange`,
+  `bgAdoption`) with tests, and the app client was rewired onto
+  them. Defects fixed from the v0.2.0 client: a follower echoing an
+  adopted background back as its own change (bgSeq bump), the
+  settings feed force-publishing (bgSeq bump) on every interaction
+  whether or not the background changed, and adoption being
+  postponed indefinitely behind a live peer drag. Core suite:
+  320 → 343 checks, 0 failures. The live two-bar field test is
+  still the end-to-end proof (Link must be ON in both bars).
+
 ## v0.2.0 (2026-10-29)
 
 - (a) **% change truncation at small widths — DONE.** Root cause: the
@@ -87,3 +133,35 @@ behaviour, and errors recorded here with their actual text, never hidden.
   (ScreenSpace/ToastNotifier) could not be re-run; the `_WIN32`
   branches are unchanged in structure from v0.1.1's proven ScreenSpace
   code, and CI builds them on windows-latest.
+- **Missing Releases section investigated (2026-10-29, Jackson's
+  field report).** `.github/workflows/build-windows.yml` was diffed
+  line-by-line against SessionBar's (which produced a release) and
+  MeterBar's: the files are equivalent — every difference is a
+  correct per-app substitution (project name in the version regex,
+  `TICKERBAR_BUILD_APP`, the `TickerBar_artefacts` exe path,
+  `TickerBar.iss`, `TickerBar-Setup.exe`). Supporting files check
+  out too: the CMake option and target exist, the .iss
+  `vc_redist` references are `#if FileExists`-guarded in all three
+  repos, and tag v0.2.0 points at the same commit as main did.
+  **Verdict: no defect found in the workflow or build files.** If
+  TickerBar's v0.2.0 release is absent, the failure is inside the
+  Actions run itself (a Windows compile error in app code is the
+  standing suspect — the VM can only syntax-check app units, not
+  build them), which is visible only in the repo's Actions tab,
+  unreadable from here. No re-tag was made on speculation.
+- **ROOT CAUSE (confirmed later the same night from the actual
+  Actions log, run 40843816422, read via a read-only token):** the
+  standing suspect above was exactly right. The workflow ran fine;
+  step 5 "Build Release" failed with:
+
+      app/Source/ToastNotifier.cpp(69,21): error C2664:
+      'HICON LoadIconW(HINSTANCE,LPCWSTR)': cannot convert
+      argument 2 from 'LPSTR' to 'LPCWSTR'
+
+  The toast feature (added in v0.2.0) passed `IDI_INFORMATION` —
+  an ANSI LPSTR in that TU because it defines no UNICODE — to the
+  explicitly-wide `LoadIconW`. The VM's g++ syntax pass could not
+  model the MSVC macro resolution, and MinGW is not installed, so
+  the Windows-only TU shipped unchecked; MSVC caught it in CI and
+  no release was produced. Fixed in v0.2.1 (see above):
+  `MAKEINTRESOURCEW(32513)`.
