@@ -1,10 +1,21 @@
-# TickerBar — v0.1.1 test kit
+# TickerBar — v0.2.0 test kit
 
 A borderless always-on-top crypto ticker bar for Windows — BTC / ETH / HYPE by
 default, any Coinbase USD pair addable. Prices are **spot prices**: Coinbase
 Exchange's public API for Coinbase-listed coins, CoinGecko for HYPE. No
 account, no keys. Midnight Kids theme family (same as MeterBar), Midnight Kids
 background by default.
+
+**What changed in v0.2.0:** two field-test bugs are fixed — the 24h % can no
+longer truncate at narrow widths (it is measured and given its full width
+first; the window also has a minimum width that guarantees it), and Reserve
+is now the family's event-driven machine (all four edges, dock/undock
+hysteresis) instead of a 4 Hz timer poll, so docked bars no longer make
+other windows bounce. New: candlestick detail charts with volume bars and
+24h / 7d / 30d ranges, a 1h % next to the 24h %, Windows toast
+notifications on alert crossings, a clickable Fear & Greed cell, and a
+**Dock** button on the bar itself. A GitHub Actions workflow now builds
+the installer on version tags, like MeterBar's.
 
 **What changed in v0.1.1 (the "no connection" fix):** v0.1 pulled prices from
 the Hyperliquid API, which **geo-blocks US IP addresses** — the bar verified
@@ -50,6 +61,9 @@ info → Run anyway**. Same for the optional installer later.
 Everything the build checked is in `build-log.txt`. If anything fails, send
 Milo that file.
 
+**Upgrading from the v0.1.1 kit:** your settings carry over — new settings
+take their defaults when absent.
+
 **Upgrading from the v0.1 kit:** your settings carry over — the settings
 file format is unchanged, and a v0.1 watchlist (BTC/ETH/HYPE or anything you
 added that's also a Coinbase USD pair) loads as-is.
@@ -66,11 +80,16 @@ added that's also a Coinbase USD pair) loads as-is.
    background (or by a cell — a click under 5 px of movement counts as a
    click, a drag moves the bar). Close it (the **X** at the right end),
    relaunch: it comes back in the same place, same size.
-3. **Click a coin.** Click BTC: a detail card opens — spot price, 24h %,
-   24h high/low, 24h volume, and a larger 24h chart. It says "spot price
+3. **Click a coin.** Click BTC: a detail card opens — spot price, 24h %
+   and 1h %, 24h high/low, 24h volume, and a **candlestick chart with
+   volume bars**. Use the **24h / 7d / 30d** buttons: 24h and 7d are hourly
+   candles; 30d switches to daily candles (Coinbase caps one request at
+   300 candles — the note under the buttons says so). It says "spot price
    (Coinbase)" and shows an as-of time. Click HYPE instead: the card says
-   "spot price (CoinGecko)" and shows a **Market cap** row (no funding row —
-   spot markets don't have one). Esc or click elsewhere closes it.
+   "spot price (CoinGecko)", shows a **Market cap** row (no funding row —
+   spot markets don't have one), flat closes-only candle ticks with a
+   "no volume from this feed" note — and **30d says the feed can't supply
+   it** instead of inventing a series. Esc or click elsewhere closes it.
 4. **Detail alert editors.** In the detail card, put an **Above** level a
    little above the current price (e.g. +1%) and hit **Set alerts**. The
    level is saved; if price later crosses it, the BTC cell **flashes**
@@ -100,15 +119,37 @@ added that's also a Coinbase USD pair) loads as-is.
 9. **Dock + Reserve screen space.** Drag the bar flush against the **top**
    edge of a monitor. Click **Reserve** (or Settings → Window). Maximise
    another window on that monitor: Windows now stops it at the bar — the
-   bar owns that strip. Turn Reserve off: maximised windows go full-height
-   again. Settings → Window → **Dock edge** switches Top/Bottom; the bar
-   snaps to the chosen edge and Reserve follows it.
+   bar owns that strip. **Leave it docked and watch the other window for
+   ~30 seconds: nothing should bounce or resize** (the v0.2.0 fix — if
+   anything flickers, note the edge and what you did). Turn Reserve off:
+   maximised windows go full-height again. The **Dock** button on the bar
+   cycles Top → Bottom → Left → Right and snaps the bar to that edge;
+   Settings → Window → **Dock edge** does the same. Reserve follows
+   whichever edge the bar is actually docked at.
 10. **Arrange / Restore.** Settings → Window → **Arrange windows clear of
     the bar**: every non-maximised window on the bar's monitor slides out
     of the bar's band. **Restore arranged windows** puts them back.
 11. **Poll interval.** Settings → Window → Poll interval: 10/20/30/60 s.
     Default 20 s. (This is the Coinbase cadence; HYPE stays ~60 s.)
-12. **Context cells.** The two right-hand cells show **FEAR & GREED**
+12. **Narrow bar, readable %.** Shrink the window width as far as it goes:
+   it stops at a floor — and at that floor every cell still shows its full
+   24h % and 1h % (no "-1...."). Add several more coins in Settings →
+   Watchlist and shrink again: the floor grows with the watchlist, and
+   the % text still never truncates.
+13. **1h %.** Each cell's price row carries a small "1h +0.42%" at the
+   right. Cross-check one against the detail card's 1h change row — they
+   come from the same hourly candles.
+14. **Alert toast.** Settings → Alerts: "Windows toast notification on a
+   cross" is ON by default. Set an Above level just over the current BTC
+   price and wait for a cross: the cell flashes **and** a Windows toast
+   appears naming the coin, the level and the price. (The toast uses a
+   tray-icon balloon — the unpackaged-app route — so a TickerBar tray
+   icon exists after the first toast.)
+15. **Fear & Greed click.** Click the FEAR & GREED cell (a small movement,
+   not a drag): your default browser opens
+   alternative.me/crypto/fear-and-greed-index/. Dragging the cell still
+   moves the bar.
+16. **Context cells.** The two right-hand cells show **FEAR & GREED**
     (number + word label, tinted red → amber → green by band) and **BTC
     DOMINANCE** (a percent). They fill in a few seconds after launch
     (they say "loading..." until the first fetch lands) and refresh about

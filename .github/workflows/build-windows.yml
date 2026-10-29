@@ -1,0 +1,78 @@
+# TickerBar — Windows CI build.
+#
+# Mirrors build-release.bat step-for-step so a CI installer and a local
+# installer are the same product:
+#   checkout -> version from CMakeLists.txt (the single source) ->
+#   configure + build Release -> run the core suite -> stage
+#   dist\TickerBar.exe -> ISCC with /DMyAppVersion -> TickerBar-Setup.exe.
+#
+# Triggers:
+#   - a version tag (vX.Y.Z): ALSO publishes the installer as a GitHub
+#     Release asset — the download-the-exe flow Jackson set up in the
+#     repo's Releases section. The job FAILS if the tag does not match
+#     the CMakeLists version.
+#   - branch pushes / manual runs: the installer is uploaded as a
+#     workflow artifact only (proof CI is green; nothing is released).
+name: build-windows
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed only by the tag-release step
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from CMakeLists.txt (single source of truth)
+        id: ver
+        shell: pwsh
+        run: |
+          $line = Select-String -Path CMakeLists.txt -Pattern 'project\(TickerBar VERSION ([0-9]+\.[0-9]+\.[0-9]+)' | Select-Object -First 1
+          if (-not $line) { throw "project VERSION not found in CMakeLists.txt" }
+          $v = $line.Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "TickerBar version: $v"
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$v") {
+            throw "Tag ${{ github.ref_name }} does not match CMakeLists version v$v — refusing to release."
+          }
+
+      - name: Configure (JUCE is fetched by CMake — no git needed for it)
+        run: cmake -S . -B build-app -DTICKERBAR_BUILD_APP=ON -A x64
+
+      - name: Build Release
+        run: cmake --build build-app --config Release
+
+      - name: Core suite
+        run: |
+          cmake -S . -B build-core -A x64
+          cmake --build build-core --config Release
+          ./build-core/Release/test_core.exe
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Stage dist and compile the installer (mirrors build-release.bat)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "build-app/app/TickerBar_artefacts/Release/TickerBar.exe" "dist/TickerBar.exe"
+          ISCC "/DMyAppVersion=${{ steps.ver.outputs.version }}" TickerBar.iss
+
+      - name: Upload installer as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TickerBar-Setup-${{ steps.ver.outputs.version }}
+          path: dist/TickerBar-Setup.exe
+
+      - name: Publish the installer on the version tag's GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/TickerBar-Setup.exe

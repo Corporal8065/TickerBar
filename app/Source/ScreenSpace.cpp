@@ -39,7 +39,8 @@ struct AppBarState {
     UINT callbackMsg = WM_APP + 0x54; // private app message for ABN_* notices
     UINT edge = ABE_TOP;
     bool registered = false;
-    RECT applied{}; // the rect Windows last accepted via ABM_SETPOS
+    RECT applied{};  // the rect Windows last accepted via ABM_SETPOS
+    RECT requested{}; // the rect WE last asked for — idempotency compares against THIS (see header)
 };
 AppBarState g_appBar;
 
@@ -64,14 +65,16 @@ struct ScreenSpace::Impl {
     std::vector<SavedWindow> saved;
 };
 
-bool ScreenSpace::reserve(void* hwndV, int edge, int physX, int physY, int physW, int physH) {
+bool ScreenSpace::reserve(void* hwndV, tickerbar::ReserveEdge edge, int physX, int physY, int physW, int physH) {
     HWND hwnd = static_cast<HWND>(hwndV);
     if (!hwnd || physW <= 0 || physH <= 0) return g_appBar.registered;
-    const UINT uEdge = edge == 1 ? ABE_BOTTOM : ABE_TOP;
+    const UINT uEdge = edge == tickerbar::ReserveEdge::Bottom ? ABE_BOTTOM
+                     : edge == tickerbar::ReserveEdge::Left   ? ABE_LEFT
+                     : edge == tickerbar::ReserveEdge::Right  ? ABE_RIGHT : ABE_TOP;
     const RECT want{ physX, physY, physX + physW, physY + physH };
     if (g_appBar.registered && g_appBar.hwnd == hwnd && g_appBar.edge == uEdge &&
-        want.left == g_appBar.applied.left && want.top == g_appBar.applied.top &&
-        want.right == g_appBar.applied.right && want.bottom == g_appBar.applied.bottom)
+        want.left == g_appBar.requested.left && want.top == g_appBar.requested.top &&
+        want.right == g_appBar.requested.right && want.bottom == g_appBar.requested.bottom)
         return true; // already exactly this bar — the UI re-sync lands here
     if (g_appBar.registered) release(); // moved / resized / other edge or monitor
     APPBARDATA abd{}; abd.cbSize = sizeof abd; abd.hWnd = hwnd;
@@ -85,15 +88,26 @@ bool ScreenSpace::reserve(void* hwndV, int edge, int physX, int physY, int physW
     SetWindowSubclass(hwnd, appBarSubclassProc, 1, 0);
     abd.uEdge = uEdge; abd.rc = want;
     SHAppBarMessage(ABM_QUERYPOS, &abd);
-    abd.rc.left = want.left; abd.rc.right = want.right; // our span along the edge is the ask; the system may trim the thickness
-    if (uEdge == ABE_TOP) abd.rc.top = want.top; else abd.rc.bottom = want.bottom;
+    // Our span ALONG the edge is the ask; the system may trim only the
+    // thickness, so restore the span and pin the anchored side.
+    if (uEdge == ABE_TOP || uEdge == ABE_BOTTOM) {
+        abd.rc.left = want.left; abd.rc.right = want.right;
+        if (uEdge == ABE_TOP) abd.rc.top = want.top; else abd.rc.bottom = want.bottom;
+    } else {
+        abd.rc.top = want.top; abd.rc.bottom = want.bottom;
+        if (uEdge == ABE_LEFT) abd.rc.left = want.left; else abd.rc.right = want.right;
+    }
     SHAppBarMessage(ABM_SETPOS, &abd);
     g_appBar.applied = abd.rc;
+    g_appBar.requested = want;
     g_appBar.registered = true;
+    const bool vertical = (uEdge == ABE_LEFT || uEdge == ABE_RIGHT);
     char buf[96];
     std::snprintf(buf, sizeof buf, "appbar active - %s strip %ld px reserved",
-                  uEdge == ABE_TOP ? "top" : "bottom",
-                  (long)(abd.rc.bottom - abd.rc.top));
+                  uEdge == ABE_TOP ? "top" : uEdge == ABE_BOTTOM ? "bottom"
+                                     : uEdge == ABE_LEFT ? "left" : "right",
+                  vertical ? (long)(abd.rc.right - abd.rc.left)
+                           : (long)(abd.rc.bottom - abd.rc.top));
     impl_->status = buf;
     return true;
 }
@@ -114,7 +128,7 @@ bool ScreenSpace::isReserved() const { return g_appBar.registered; }
 namespace {
 struct ArrangeMove { HWND hwnd; tickerbar::IntRect from, to; };
 struct ArrangeCtx {
-    HMONITOR mon; HWND exclude; int strip; int edge;
+    HMONITOR mon; HWND exclude; int strip; tickerbar::ReserveEdge edge;
     tickerbar::IntRect monRect;
     std::vector<ArrangeMove> moves;
 };
@@ -136,15 +150,13 @@ BOOL CALLBACK arrangeEnumProc(HWND hwnd, LPARAM lp) {
     if (wr.w <= 0 || wr.h <= 0) return TRUE;
     // Fit FIRST, move later: mutating windows mid-enumeration can disturb
     // the enumeration itself, so this pass only collects the plan.
-    const tickerbar::IntRect fit = ctx->edge == 1
-        ? tickerbar::arrangeFitAbove(wr, ctx->monRect, ctx->strip)
-        : tickerbar::arrangeFit(wr, ctx->monRect, ctx->strip);
+    const tickerbar::IntRect fit = tickerbar::arrangeFit(wr, ctx->monRect, ctx->edge, ctx->strip);
     if (fit != wr) ctx->moves.push_back({ hwnd, wr, fit });
     return TRUE;
 }
 } // namespace
 
-int ScreenSpace::arrange(void* hwndV, int stripPhysPx, int edge) {
+int ScreenSpace::arrange(void* hwndV, int stripPhysPx, tickerbar::ReserveEdge edge) {
     HWND hwnd = static_cast<HWND>(hwndV);
     if (!hwnd || stripPhysPx <= 0) {
         impl_->status = "arrange: no strip to clear (dock the bar at a monitor edge first)";
@@ -195,10 +207,10 @@ struct ScreenSpace::Impl {
     std::string status = "unavailable (non-Windows build)";
     std::vector<SavedWindow> saved;
 };
-bool ScreenSpace::reserve(void*, int, int, int, int, int) { return false; }
+bool ScreenSpace::reserve(void*, tickerbar::ReserveEdge, int, int, int, int) { return false; }
 void ScreenSpace::release() {}
 bool ScreenSpace::isReserved() const { return false; }
-int ScreenSpace::arrange(void*, int, int) { return 0; }
+int ScreenSpace::arrange(void*, int, tickerbar::ReserveEdge) { return 0; }
 int ScreenSpace::restore() { return 0; }
 std::string ScreenSpace::statusInfo() const { return impl_->status; }
 #endif

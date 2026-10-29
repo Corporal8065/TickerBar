@@ -1,11 +1,21 @@
 #include "MainComponent.h"
 #include <tickerbar/Format.hpp>
 #include <tickerbar/Stale.hpp>
+#include <tickerbar/Layout.hpp>
 #include "SettingsStore.h"
 #if JUCE_WINDOWS
  #include <windows.h> // native rects for the AppBar sync (physical pixels)
 #endif
-static const char* kVersion = "v0.1.1";
+static const char* kVersion = "v0.2.0";
+static juce::String dockEdgeName(tickerbar::DockEdge e) {
+    switch (e) {
+        case tickerbar::DockEdge::Top: return "Top";
+        case tickerbar::DockEdge::Bottom: return "Bottom";
+        case tickerbar::DockEdge::Left: return "Left";
+        case tickerbar::DockEdge::Right: return "Right";
+    }
+    return "Top";
+}
 
 // =====================================================================
 // Status dot — the feed honesty light: green live, amber stale, red down
@@ -64,21 +74,45 @@ public:
             g.drawRoundedRectangle(b, 8.f, 1.f);
         }
         auto r = b.reduced(9.f, 5.f);
-        // top row: symbol (left) + change chip (right)
+        // top row: symbol (left) + 24h % (right). v0.2.0 layout rule
+        // (core Layout.hpp, unit-tested): the % is measured and
+        // reserved IN FULL first; the symbol takes what remains and
+        // is the only text that may clip. Jackson's field screenshot
+        // showed "-1...." under the old fixed-64px symbol split.
         auto top = r.removeFromTop(18.f);
-        g.setColour(th.text.withAlpha(alpha)); g.setFont(juce::Font(13.5f, juce::Font::bold));
-        g.drawText(juce::String(symbol), top.removeFromLeft(64.f), juce::Justification::centredLeft);
         auto pct = has ? tickerbar::changePct(ctx.price, ctx.open24h) : std::nullopt;
+        const juce::Font symFont(13.5f, juce::Font::bold), pctFont(12.5f, juce::Font::bold);
+        const juce::String pctText = pct ? juce::String(tickerbar::formatPct(*pct)) : juce::String();
+        auto lay = tickerbar::coinCellTopRow((int)top.getWidth(),
+                                             (int)std::ceil(symFont.getStringWidthFloat(juce::String(symbol))),
+                                             pct ? (int)std::ceil(pctFont.getStringWidthFloat(pctText)) : 0);
+        g.setColour(th.text.withAlpha(alpha)); g.setFont(symFont);
+        g.drawText(juce::String(symbol), top.removeFromLeft((float)lay.symbolW), juce::Justification::centredLeft);
+        top.removeFromLeft((float)lay.gap);
         if (pct) {
             g.setColour((*pct >= 0 ? th.good : th.bad).withAlpha(alpha));
-            g.setFont(juce::Font(12.5f, juce::Font::bold));
-            g.drawText(juce::String(tickerbar::formatPct(*pct)), top, juce::Justification::centredRight);
+            g.setFont(pctFont);
+            g.drawText(pctText, top.removeFromLeft((float)lay.pctW), juce::Justification::centredRight);
         }
-        // price row
+        // price row: price (left) + 1h % (right, v0.2.0 item e — from
+        // the hourly candles already fetched for the sparkline; no
+        // extra API calls). Same never-truncate rule for the 1h text.
         auto mid = r.removeFromTop(24.f);
-        g.setColour(th.text.withAlpha(alpha)); g.setFont(juce::Font(16.5f, juce::Font::bold));
-        g.drawText(has ? juce::String(tickerbar::formatPrice(ctx.price)) : juce::String("--"),
-                   mid, juce::Justification::centredLeft);
+        auto pct1h = has ? tickerbar::changePct1h(candles) : std::nullopt;
+        const juce::String priceText = has ? juce::String(tickerbar::formatPrice(ctx.price)) : juce::String("--");
+        const juce::String h1Text = pct1h ? ("1h " + juce::String(tickerbar::formatPct(*pct1h))) : juce::String();
+        const juce::Font priceFont(16.5f, juce::Font::bold), h1Font(11.5f, juce::Font::bold);
+        auto lay2 = tickerbar::coinCellTopRow((int)mid.getWidth(),
+                                              (int)std::ceil(priceFont.getStringWidthFloat(priceText)),
+                                              pct1h ? (int)std::ceil(h1Font.getStringWidthFloat(h1Text)) : 0);
+        g.setColour(th.text.withAlpha(alpha)); g.setFont(priceFont);
+        g.drawText(priceText, mid.removeFromLeft((float)lay2.symbolW), juce::Justification::centredLeft);
+        mid.removeFromLeft((float)lay2.gap);
+        if (pct1h) {
+            g.setColour((*pct1h >= 0 ? th.good : th.bad).withAlpha(alpha));
+            g.setFont(h1Font);
+            g.drawText(h1Text, mid.removeFromLeft((float)lay2.pctW), juce::Justification::centredRight);
+        }
         // sparkline (24h of hourly closes) or state line
         if (!candles.empty()) {
             std::vector<double> closes;
@@ -123,6 +157,7 @@ public:
     juce::String title, valueText, subText;
     juce::Colour valueColour;
     bool has = false, stale = false;
+    bool fngLink = false; // Fear & Greed cell only: a click opens the index page (v0.2.0 item d)
     explicit ContextCell(MainComponent* o) : owner(o) {}
     void setData(const juce::String& v, const juce::String& sub, juce::Colour col, bool isStale) {
         if (v == valueText && sub == subText && col == valueColour && isStale == stale && has) { repaint(); return; }
@@ -130,6 +165,10 @@ public:
     }
     void mouseDown(const juce::MouseEvent& e) override { owner->windowDragStarted(e); }
     void mouseDrag(const juce::MouseEvent& e) override { owner->windowDragged(e); }
+    void mouseUp(const juce::MouseEvent& e) override {
+        if (fngLink && e.getDistanceFromDragStart() < 5 && e.mouseWasClicked())
+            juce::URL("https://alternative.me/crypto/fear-and-greed-index/").launchInDefaultBrowser();
+    }
     void paint(juce::Graphics& g) override {
         const auto& th = owner->theme();
         auto b = getLocalBounds().toFloat().reduced(1.f);
@@ -153,14 +192,22 @@ public:
 };
 
 // =====================================================================
-// Detail view (CallOutBox content): bigger chart + full stats + the
-// alert editors for this symbol.
+// Detail view (CallOutBox content): candlestick chart + volume bars
+// with 24h / 7d / 30d timescale switching (v0.2.0 item c), full stats
+// and the alert editors for this symbol. The component polls the
+// owner's PriceClient once a second for the selected range and asks
+// for a fetch when the cache is empty (the client throttles).
+// Feed honesty: Coinbase ranges are real OHLCV (24h/7d hourly, 30d
+// daily — Coinbase caps one candles request at 300). CoinGecko
+// (HYPE) supplies hourly closes only: candles are flat ticks, there
+// are no volume bars, and 30d does not exist — the note line under
+// the range buttons says so in words, from PriceClient::detailNote.
 // =====================================================================
-class DetailComponent : public juce::Component {
+class DetailComponent : public juce::Component, private juce::Timer {
 public:
     DetailComponent(MainComponent* o, const juce::String& sym, const tickerbar::AssetCtx& c,
                     std::vector<tickerbar::Candle> cs, bool isStale, const juce::String& asOf)
-        : owner(o), ctx(c), candles(std::move(cs)), stale(isStale) {
+        : owner(o), symbol(sym), ctx(c), candles(std::move(cs)), stale(isStale) {
         auto& th = owner->theme();
         const bool gecko = tickerbar::sourceForSymbol(sym.toStdString()) == tickerbar::PriceSource::CoinGecko;
         title.setText(sym + (gecko ? "  -  spot price (CoinGecko)" : "  -  spot price (Coinbase)"),
@@ -171,25 +218,36 @@ public:
         asOfLabel.setFont(10.5f); asOfLabel.setColour(juce::Label::textColourId, isStale ? th.warn : th.dim);
         addAndMakeVisible(asOfLabel);
         auto pct = tickerbar::changePct(ctx.price, ctx.open24h);
-        // 24h range: the source's own stats fields when it provides
-        // them (both do), candles as the fallback.
         auto hi = ctx.high24h > 0 ? std::optional<double>(ctx.high24h) : tickerbar::candlesHigh(candles);
         auto lo = ctx.low24h > 0 ? std::optional<double>(ctx.low24h) : tickerbar::candlesLow(candles);
         auto row = [&](const juce::String& k, const juce::String& v, juce::Colour vc = juce::Colour()) {
-            juce::String s = k + "  " + v;
-            auto* l = new juce::Label({}, s);
+            juce::String s2 = k + "  " + v;
+            auto* l = new juce::Label({}, s2);
             l->setFont(juce::Font(13.f)); l->setColour(juce::Label::textColourId, vc.getARGB() ? vc : th.text);
             rows.add(l); addAndMakeVisible(l);
         };
         row("Price (spot)", juce::String(tickerbar::formatPrice(ctx.price)));
         if (pct) row("24h change", juce::String(tickerbar::formatPct(*pct)), *pct >= 0 ? th.good : th.bad);
+        if (auto p1h = tickerbar::changePct1h(candles))
+            row("1h change", juce::String(tickerbar::formatPct(*p1h)), *p1h >= 0 ? th.good : th.bad);
         if (hi) row("24h high", juce::String(tickerbar::formatPrice(*hi)));
         if (lo) row("24h low", juce::String(tickerbar::formatPrice(*lo)));
         row("24h volume", juce::String(tickerbar::formatVolume(ctx.dayVolumeUsd)));
-        // No funding row: these are spot sources — a funding rate does
-        // not exist here and is never fabricated. CoinGecko rows carry
-        // a market cap instead.
         if (ctx.marketCapUsd > 0) row("Market cap", juce::String(tickerbar::formatVolume(ctx.marketCapUsd)));
+        // range buttons (radio group) + the feed-limits note line
+        auto styleRangeBtn = [&](juce::TextButton& b, const char* label, tickerbar::DetailRange r) {
+            b.setButtonText(label);
+            b.setClickingTogglesState(true);
+            b.setRadioGroupId(7701);
+            b.setToggleState(range == r, juce::dontSendNotification);
+            b.onClick = [this, r] { range = r; refreshRange(); };
+            addAndMakeVisible(b);
+        };
+        styleRangeBtn(btn24, "24h", tickerbar::DetailRange::H24);
+        styleRangeBtn(btn7, "7d", tickerbar::DetailRange::D7);
+        styleRangeBtn(btn30, "30d", tickerbar::DetailRange::D30);
+        noteLabel.setFont(10.f); noteLabel.setColour(juce::Label::textColourId, th.dim);
+        addAndMakeVisible(noteLabel);
         alertsTitle.setText("Price alerts for " + sym, juce::dontSendNotification);
         alertsTitle.setFont(juce::Font(12.5f, juce::Font::bold)); alertsTitle.setColour(juce::Label::textColourId, th.accent);
         addAndMakeVisible(alertsTitle);
@@ -218,38 +276,85 @@ public:
             if (auto* cb = findParentComponentOfClass<juce::CallOutBox>()) cb->dismiss();
         };
         addAndMakeVisible(setAlertsBtn); addAndMakeVisible(clearBtn);
-        setSize(360, 452);
+        refreshRange();
+        startTimerHz(1);
+        setSize(390, 512);
+    }
+    ~DetailComponent() override { stopTimer(); }
+    void timerCallback() override { refreshRange(); }
+    void refreshRange() {
+        auto cs = owner->client().candlesFor(symbol.toStdString(), range);
+        if (cs.empty()) owner->client().requestCandles(symbol.toStdString(), range);
+        candles = std::move(cs);
+        juce::String note = juce::String(owner->client().detailNote(symbol.toStdString(), range));
+        if (note.isEmpty()) {
+            if (candles.empty()) note = "loading...";
+            else if (range == tickerbar::DetailRange::D30 &&
+                     tickerbar::sourceForSymbol(symbol.toStdString()) == tickerbar::PriceSource::Coinbase)
+                note = "Coinbase caps one candles request at 300 - 30d is daily candles.";
+            else if (range == tickerbar::DetailRange::D7 &&
+                     tickerbar::sourceForSymbol(symbol.toStdString()) == tickerbar::PriceSource::Coinbase)
+                note = "Hourly candles (168).";
+        }
+        if (note != noteLabel.getText()) noteLabel.setText(note, juce::dontSendNotification);
+        repaint();
     }
     void paint(juce::Graphics& g) override {
         const auto& th = owner->theme();
         g.fillAll(th.panel);
-        // big chart in the reserved band
         auto area = chartArea.toFloat().reduced(6.f);
         g.setColour(th.deepest); g.fillRoundedRectangle(area, 6.f);
         if (candles.size() > 1) {
-            std::vector<double> closes; for (auto& c : candles) closes.push_back(c.close);
-            auto norm = tickerbar::normalizeSeries(closes);
-            juce::Path p;
-            for (size_t i = 0; i < norm.size(); ++i) {
-                float x = area.getX() + area.getWidth() * (float)i / (float)(norm.size() - 1);
-                float y = area.getBottom() - 4.f - norm[i] * (area.getHeight() - 8.f);
-                if (i == 0) p.startNewSubPath(x, y); else p.lineTo(x, y);
+            auto rangeInfo = tickerbar::candleRange(candles);
+            if (rangeInfo) {
+                // price pane = top ~74%, volume pane = bottom ~20%
+                auto priceArea = area.withHeight(area.getHeight() * 0.74f);
+                auto volArea = area.withTop(area.getBottom() - area.getHeight() * 0.20f);
+                double lo = rangeInfo->lo, hi = rangeInfo->hi;
+                if (!(hi > lo)) { const double pad = std::max(1e-9, hi * 0.005); hi += pad; lo -= pad; }
+                const float step = priceArea.getWidth() / (float)candles.size();
+                const float bodyW = std::max(1.0f, step * 0.62f);
+                auto yFor = [&](double px) {
+                    return priceArea.getBottom() - (float)((px - lo) / (hi - lo)) * priceArea.getHeight();
+                };
+                for (size_t i = 0; i < candles.size(); ++i) {
+                    const auto& c = candles[i];
+                    const float cx = priceArea.getX() + step * ((float)i + 0.5f);
+                    const bool up = c.close >= c.open;
+                    auto col = (c.close == c.open) ? th.dim : (up ? th.good : th.bad);
+                    g.setColour(col);
+                    g.drawLine(cx, yFor(c.high), cx, yFor(c.low), 1.f); // wick
+                    const float yO = yFor(c.open), yC = yFor(c.close);
+                    const float top = std::min(yO, yC), hgt = std::max(1.f, std::abs(yC - yO));
+                    g.fillRect(cx - bodyW / 2.f, top, bodyW, hgt);       // body (flat tick for closes-only)
+                    if (rangeInfo->hasVolume && rangeInfo->maxVolume > 0) {
+                        const float vh = (float)(c.volume / rangeInfo->maxVolume) * volArea.getHeight();
+                        g.setColour(col.withAlpha(0.55f));
+                        g.fillRect(cx - bodyW / 2.f, volArea.getBottom() - vh, bodyW, vh);
+                    }
+                }
+                g.setColour(th.dim); g.setFont(9.5f);
+                g.drawText(juce::String(tickerbar::formatPrice(hi)), priceArea.reduced(4.f, 2.f), juce::Justification::topRight);
+                g.drawText(juce::String(tickerbar::formatPrice(lo)), priceArea.reduced(4.f, 2.f), juce::Justification::bottomRight);
+                if (!rangeInfo->hasVolume) {
+                    g.setColour(th.dim);
+                    g.drawText("no volume from this feed", volArea.reduced(4.f, 0.f), juce::Justification::centredRight);
+                }
+                return;
             }
-            auto pct = tickerbar::changePct(ctx.price, ctx.open24h);
-            auto col = (pct && *pct >= 0) ? th.good : th.bad;
-            juce::Path fill = p;
-            fill.lineTo(area.getRight(), area.getBottom()); fill.lineTo(area.getX(), area.getBottom()); fill.closeSubPath();
-            g.setColour(col.withAlpha(0.15f)); g.fillPath(fill);
-            g.setColour(col); g.strokePath(p, juce::PathStrokeType(1.8f));
-        } else {
-            g.setColour(th.dim); g.setFont(11.f);
-            g.drawText("chart unavailable", area, juce::Justification::centred);
         }
+        g.setColour(th.dim); g.setFont(11.f);
+        g.drawText("chart unavailable", area, juce::Justification::centred);
     }
     void resized() override {
         auto r = getLocalBounds().reduced(14);
         title.setBounds(r.removeFromTop(22)); asOfLabel.setBounds(r.removeFromTop(15)); r.removeFromTop(6);
-        chartArea = r.removeFromTop(130); r.removeFromTop(8);
+        auto rangeRow = r.removeFromTop(24);
+        btn24.setBounds(rangeRow.removeFromLeft(58)); rangeRow.removeFromLeft(6);
+        btn7.setBounds(rangeRow.removeFromLeft(58)); rangeRow.removeFromLeft(6);
+        btn30.setBounds(rangeRow.removeFromLeft(58));
+        noteLabel.setBounds(r.removeFromTop(15)); r.removeFromTop(4);
+        chartArea = r.removeFromTop(150); r.removeFromTop(8);
         for (auto* l : rows) l->setBounds(r.removeFromTop(20));
         r.removeFromTop(8);
         alertsTitle.setBounds(r.removeFromTop(18)); r.removeFromTop(4);
@@ -263,13 +368,16 @@ public:
     }
 private:
     MainComponent* owner;
+    juce::String symbol;
     tickerbar::AssetCtx ctx;
     std::vector<tickerbar::Candle> candles;
     bool stale;
-    juce::Label title, asOfLabel, alertsTitle, aboveLabel, belowLabel;
+    tickerbar::DetailRange range = tickerbar::DetailRange::H24;
+    juce::Label title, asOfLabel, alertsTitle, aboveLabel, belowLabel, noteLabel;
     juce::OwnedArray<juce::Label> rows;
     juce::TextEditor aboveEditor, belowEditor;
     juce::TextButton setAlertsBtn { "Set alerts" }, clearBtn { "Clear" };
+    juce::TextButton btn24, btn7, btn30;
     juce::Rectangle<int> chartArea;
 };
 
@@ -332,6 +440,7 @@ public:
         });
         panel("Alerts", [&]{
             toggle("Soft click sound on a cross (default off)", st->alertSound, [&](bool b){ st->alertSound = b; });
+            toggle("Windows toast notification on a cross", st->alertToasts, [&](bool b){ st->alertToasts = b; });
             note("Levels are also editable by clicking a coin on the bar. A cross fires once, then re-arms when price returns.");
             for (auto& sym : st->watchlist) {
                 auto lv = owner->levelsFor(sym);
@@ -373,8 +482,8 @@ public:
         panel("Window", [&]{
             toggle("Always on top", st->pinned, [&](bool b){ st->pinned = b; });
             toggle("Reserve screen space when docked (Windows)", st->reserveScreenSpace, [&](bool b){ st->reserveScreenSpace = b; });
-            note("While ON and the bar is docked flush at its monitor edge, Windows shrinks that monitor's work area so maximised windows stop at the bar. Same control as the bar's Reserve button.");
-            combo("Dock edge", {"Top", "Bottom"}, (int)st->dockEdge, [&](int v){
+            note("While ON and the bar is docked flush at a monitor edge, Windows shrinks that monitor's work area so maximised windows stop at the bar. Same control as the bar's Reserve button; the Dock button on the bar picks the edge. Reserve is event-driven (v0.2.0): it reacts to window moves/resizes, never polls.");
+            combo("Dock edge", {"Top", "Bottom", "Left", "Right"}, (int)st->dockEdge, [&](int v){
                 st->dockEdge = (tickerbar::DockEdge)v;
                 if (onChanged) onChanged();
                 owner->snapToDockEdge();
@@ -387,7 +496,8 @@ public:
             note("Arrange slides every other (non-maximised) window on the bar's monitor clear of the bar; Restore puts them back. Screen space: " + owner->screenSpaceStatus());
         });
         panel("About", [&]{
-            note("TickerBar v0.1.1 - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
+            note("TickerBar v0.2.0 - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
+            note("Detail chart: candlesticks + volume with 24h / 7d / 30d ranges. Coinbase caps one candles request at 300: 24h/7d are hourly, 30d is daily. CoinGecko (HYPE) supplies hourly closes only - no OHLC, no volume, no 30d - and the chart note says so.");
             note("Polls every N seconds (Window panel). If the feed drops, cells grey out and keep the last real prices, marked STALE - never fake-fresh numbers.");
             note("Context cells: Fear & Greed index (alternative.me) and BTC dominance (CoinGecko) poll separately every ~5 minutes and go stale on their own clock - they never block prices.");
             note("Made with JUCE.");
@@ -481,6 +591,9 @@ MainComponent::MainComponent() {
     reserveBtn_.setToggleState(state.reserveScreenSpace, juce::dontSendNotification);
     reserveBtn_.setTooltip("Reserve screen space: Windows keeps maximised windows clear of the docked bar");
     reserveBtn_.onClick = [this]{ state.reserveScreenSpace = reserveBtn_.getToggleState(); saveSettings(); syncScreenSpace(); };
+    dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
+    dockBtn_.setTooltip("Dock edge: click to cycle Top / Bottom / Left / Right - the bar snaps to that edge");
+    dockBtn_.onClick = [this]{ cycleDockEdge(); };
     settingsBtn_.onClick = [this]{
         settingsWin_->content.build();
         settingsWin_->setVisible(true); settingsWin_->toFront(true);
@@ -488,7 +601,7 @@ MainComponent::MainComponent() {
     minBtn_.onClick = [this]{ if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
                                  if (auto* peer = w->getPeer()) peer->setMinimised(true); };
     quitBtn_.onClick = []{ juce::JUCEApplication::getInstance()->systemRequestedQuit(); };
-    for (auto* b : { &reserveBtn_, &settingsBtn_, &minBtn_, &quitBtn_ }) addAndMakeVisible(b);
+    for (auto* b : { &reserveBtn_, &dockBtn_, &settingsBtn_, &minBtn_, &quitBtn_ }) addAndMakeVisible(b);
 
     settingsWin_ = std::make_unique<TickerSettingsWindow>();
     settingsWin_->content.owner = this;
@@ -499,13 +612,16 @@ MainComponent::MainComponent() {
 
     fngCell_ = std::make_unique<ContextCell>(this);
     fngCell_->title = "FEAR & GREED";
-    fngCell_->setTooltip("Crypto Fear & Greed Index - alternative.me. Updates about daily; polled every 5 minutes.");
+    fngCell_->fngLink = true;
+    fngCell_->setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    fngCell_->setTooltip("Crypto Fear & Greed Index - alternative.me. Updates about daily; polled every 5 minutes. Click to open the index page.");
     domCell_ = std::make_unique<ContextCell>(this);
     domCell_->title = "BTC DOMINANCE";
     domCell_->setTooltip("BTC share of total crypto market cap - CoinGecko global. Polled every 5 minutes.");
     addAndMakeVisible(fngCell_.get());
     addAndMakeVisible(domCell_.get());
 
+    state.windowW = std::max(state.windowW, minimumBarWidth()); // supported-width floor from the first frame
     rebuildCells();
     client_.setWatchlist(state.watchlist);
     client_.setPollSec(state.pollSec);
@@ -551,6 +667,7 @@ void MainComponent::resized() {
     minBtn_.setBounds(r.removeFromRight(26).withSizeKeepingCentre(26, 24));
     settingsBtn_.setBounds(r.removeFromRight(76).withSizeKeepingCentre(72, 24));
     reserveBtn_.setBounds(r.removeFromRight(80).withSizeKeepingCentre(76, 24));
+    dockBtn_.setBounds(r.removeFromRight(66).withSizeKeepingCentre(62, 24));
     // market-context group at the right of the coin cells
     if (domCell_ && fngCell_) {
         domCell_->setBounds(r.removeFromRight(112));
@@ -558,6 +675,9 @@ void MainComponent::resized() {
         fngCell_->setBounds(r.removeFromRight(112));
         r.removeFromRight(6);
     }
+    if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
+        w->setResizeLimits(minimumBarWidth(), 56, 3840, 300);
+    syncScreenSpace(); // v0.2.0: a resize is a reserve-machine event
     // cells share the middle equally
     const int n = (int)cells_.size();
     if (n > 0) {
@@ -606,10 +726,18 @@ void MainComponent::refreshData() {
                                                      tickerbar::staleAfterSecFor(cell->symbol)) != tickerbar::FeedStatus::Live;
             cell->setData(*ctx, client_.candlesFor(cell->symbol), stale);
             auto& tracker = trackers_[cell->symbol];
-            unsigned ev = tracker.step(levelsFor(cell->symbol), ctx->price);
+            const auto lv = levelsFor(cell->symbol);
+            unsigned ev = tracker.step(lv, ctx->price);
             if (ev != tickerbar::AlertNone) {
                 cell->flash();
                 if (state.alertSound) clickPlayer_.play();
+                if (state.alertToasts) {
+                    void* hwnd = nullptr;
+                    if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
+                        if (auto* peer = w->getPeer()) hwnd = peer->getNativeHandle();
+                    toastNotifier_.show(hwnd, "TickerBar alert",
+                                        tickerbar::alertNotificationText(cell->symbol, ev, lv, ctx->price));
+                }
             }
         }
     }
@@ -667,7 +795,11 @@ void MainComponent::refreshStatus() {
 void MainComponent::timerCallback() {
     refreshStatus();
     refreshContext(); // age-based stale transitions need no new data to show
-    syncScreenSpace();
+    // v0.2.0: NO screen-space work here. The v0.1 sync ran from this
+    // 4 Hz timer and re-asserted the AppBar several times a second —
+    // half of the flicker Jackson field-reported (MeterBar v0.18's
+    // engine). The reserve machine is event-driven now:
+    // notifyWindowGeometryChanged() feeds it window moved/resized.
     auto b = currentWindowBounds();
     if (b != lastSavedBounds_ && !b.isEmpty()) { lastSavedBounds_ = b; saveSettings(); }
 }
@@ -693,6 +825,7 @@ void MainComponent::settingsChanged(bool watchlistToo) {
     }
     if (reserveBtn_.getToggleState() != state.reserveScreenSpace)
         reserveBtn_.setToggleState(state.reserveScreenSpace, juce::dontSendNotification);
+    dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
     saveSettings();
     syncScreenSpace();
     repaint();
@@ -743,6 +876,14 @@ void MainComponent::openDetail(const juce::String& symbol) {
     juce::CallOutBox::launchAsynchronously(std::move(detail), anchor, nullptr);
 }
 
+// v0.2.0: on-bar Dock button — cycle the preferred edge and snap.
+void MainComponent::cycleDockEdge() {
+    state.dockEdge = (tickerbar::DockEdge)(((int)state.dockEdge + 1) % 4);
+    dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
+    saveSettings();
+    snapToDockEdge();
+}
+
 void MainComponent::snapToDockEdge() {
     auto* w = findParentComponentOfClass<juce::DocumentWindow>();
     if (!w) return;
@@ -750,35 +891,98 @@ void MainComponent::snapToDockEdge() {
     if (display == nullptr) return;
     auto area = display->totalArea;
     auto b = w->getBounds();
-    b.setY(state.dockEdge == tickerbar::DockEdge::Top ? area.getY() : area.getBottom() - b.getHeight());
+    switch (state.dockEdge) {
+        case tickerbar::DockEdge::Top:    b.setY(area.getY()); break;
+        case tickerbar::DockEdge::Bottom: b.setY(area.getBottom() - b.getHeight()); break;
+        case tickerbar::DockEdge::Left:   b.setX(area.getX()); break;
+        case tickerbar::DockEdge::Right:  b.setX(area.getRight() - b.getWidth()); break;
+    }
     b.setX(juce::jlimit(area.getX(), area.getRight() - b.getWidth(), b.getX()));
+    b.setY(juce::jlimit(area.getY(), area.getBottom() - b.getHeight(), b.getY()));
     w->setBounds(b);
     syncScreenSpace();
 }
 
-// Reserve sync (MeterBar v0.18 pattern): while the toggle is ON and the
-// bar sits flush at its docked edge of its monitor, register as an
-// AppBar. Physical pixels from GetWindowRect on Windows; the ~4x/sec
-// timer poll is what makes moves/resizes/edge changes take effect.
+// The supported-width floor: fixed chrome (dot + wordmark block +
+// buttons + context cells, mirroring resized()) plus, per watched
+// cell, core minCoinCellWidth() with the WORST-CASE % strings measured
+// at the render fonts ("-100.00%" for 24h, "1h -100.00%" for 1h — the
+// wider of the two governs). Below this width the layout rule cannot
+// keep its promise, so the window simply may not be that narrow.
+int MainComponent::minimumBarWidth() const {
+    const juce::Font pctFont(12.5f, juce::Font::bold), h1Font(11.5f, juce::Font::bold), symFont(13.5f, juce::Font::bold);
+    const int pctWorst = (int)std::ceil(std::max(pctFont.getStringWidthFloat("-100.00%"),
+                                                 h1Font.getStringWidthFloat("1h -100.00%")));
+    int cellsW = 0;
+    for (auto& sym : state.watchlist) {
+        const int symW = (int)std::ceil(symFont.getStringWidthFloat(juce::String(sym)));
+        cellsW += tickerbar::minCoinCellWidth(symW, pctWorst);
+    }
+    if (!state.watchlist.empty()) cellsW += 6 * ((int)state.watchlist.size() - 1); // inter-cell gaps
+    const int chrome = 16 /*outer pad*/ + 24 /*status dot*/ + 96 /*wordmark block*/
+                     + 26 + 26 + 76 + 80 + 66 /*quit/min/settings/reserve/dock*/
+                     + 112 + 6 + 112 + 6;     /*context cells + gaps*/
+    return chrome + cellsW;
+}
+
+// MainWindow moved/resized feed — the reserve machine's event source
+// (plus settings persistence for the new position).
+void MainComponent::notifyWindowGeometryChanged() {
+    syncScreenSpace();
+    auto b = currentWindowBounds();
+    if (b != lastSavedBounds_ && !b.isEmpty()) { lastSavedBounds_ = b; saveSettings(); }
+}
+
+// Reserve sync, v0.2.0 — MeterBar v0.18.1/v0.19.1 semantics, ported:
+// the ReserveMachine (pure core, unit-tested) consumes geometry
+// EVENTS and returns transitions; this function performs ONLY the
+// returned action. Nothing here runs from a timer. Hysteresis: dock
+// at gap <= 2 px, release only past 8 px — the 3..8 px band is a dead
+// zone where repeat observations return None forever, so a 1 px rect
+// wobble can never tear the AppBar down and rebuild it (the flicker
+// Jackson field-reported: bar jumps, windows resize, bar jumps back).
 void MainComponent::syncScreenSpace() {
+    tickerbar::IntRect bar{}, mon{};
+    long long monId = 0;
+    void* hwnd = nullptr;
 #if JUCE_WINDOWS
     auto* w = findParentComponentOfClass<juce::DocumentWindow>();
-    HWND hwnd = (w && w->getPeer()) ? static_cast<HWND>(w->getPeer()->getNativeHandle()) : nullptr;
-    if (hwnd) {
-        RECT wr{}; GetWindowRect(hwnd, &wr);
-        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO mi{}; mi.cbSize = sizeof mi; GetMonitorInfoW(mon, &mi);
-        const bool top = state.dockEdge == tickerbar::DockEdge::Top;
-        const bool docked = top ? std::abs(wr.top - mi.rcMonitor.top) <= 2
-                                : std::abs(wr.bottom - mi.rcMonitor.bottom) <= 2;
-        if (state.reserveScreenSpace && docked)
-            screenSpace_.reserve(hwnd, top ? 0 : 1, wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top);
-        else
-            screenSpace_.release();
+    HWND h = (w && w->getPeer()) ? static_cast<HWND>(w->getPeer()->getNativeHandle()) : nullptr;
+    if (h) {
+        hwnd = h;
+        RECT wr{}; GetWindowRect(h, &wr);
+        HMONITOR hm = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{}; mi.cbSize = sizeof mi; GetMonitorInfoW(hm, &mi);
+        bar = { wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top };
+        mon = { mi.rcMonitor.left, mi.rcMonitor.top,
+                mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top };
+        monId = (long long)(intptr_t)hm;
     }
 #else
-    screenSpace_.release();
+    auto b = currentWindowBounds();
+    if (auto* d = juce::Desktop::getInstance().getDisplays().getDisplayForRect(b)) {
+        auto a = d->totalArea;
+        bar = { b.getX(), b.getY(), b.getWidth(), b.getHeight() };
+        mon = { a.getX(), a.getY(), a.getWidth(), a.getHeight() };
+        monId = (long long)a.getX() * 100000 + a.getY();
+    }
 #endif
+    if (bar.w <= 0 || mon.w <= 0) return;
+    tickerbar::EdgeGaps gaps{ bar.y - mon.y, mon.bottom() - bar.bottom(),
+                              bar.x - mon.x, mon.right() - bar.right() };
+    auto action = reserveMachine_.update(state.reserveScreenSpace, gaps, bar, mon, monId);
+    using namespace tickerbar;
+    switch (action) {
+        case ReserveAction::None: break;
+        case ReserveAction::Release: screenSpace_.release(); break;
+        case ReserveAction::Switch: screenSpace_.release(); [[fallthrough]];
+        case ReserveAction::Register: [[fallthrough]];
+        case ReserveAction::Update: {
+            auto strip = reserveMachine_.requestedRect();
+            screenSpace_.reserve(hwnd, reserveMachine_.edge(), strip.x, strip.y, strip.w, strip.h);
+            break;
+        }
+    }
     if (reserveBtn_.getToggleState() != state.reserveScreenSpace)
         reserveBtn_.setToggleState(state.reserveScreenSpace, juce::dontSendNotification);
 }
@@ -791,12 +995,21 @@ void MainComponent::doArrange() {
         RECT wr{}; GetWindowRect(hwnd, &wr);
         HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         MONITORINFO mi{}; mi.cbSize = sizeof mi; GetMonitorInfoW(mon, &mi);
-        const bool top = state.dockEdge == tickerbar::DockEdge::Top;
-        const int strip = top ? (wr.bottom - mi.rcMonitor.top) : (mi.rcMonitor.bottom - wr.top);
-        screenSpace_.arrange(hwnd, strip, top ? 0 : 1);
+        const tickerbar::IntRect barR{ wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top };
+        const tickerbar::IntRect monR{ mi.rcMonitor.left, mi.rcMonitor.top,
+                                       mi.rcMonitor.right - mi.rcMonitor.left,
+                                       mi.rcMonitor.bottom - mi.rcMonitor.top };
+        tickerbar::EdgeGaps gaps{ barR.y - monR.y, monR.bottom() - barR.bottom(),
+                                  barR.x - monR.x, monR.right() - barR.right() };
+        const auto edge = reserveMachine_.reserved() ? reserveMachine_.edge()
+                                                     : tickerbar::ReserveMachine::nearestEdge(gaps, barR);
+        const auto stripRect = tickerbar::ReserveMachine::stripRect(edge, barR, monR);
+        const int strip = (edge == tickerbar::ReserveEdge::Top || edge == tickerbar::ReserveEdge::Bottom)
+                              ? stripRect.h : stripRect.w;
+        screenSpace_.arrange(hwnd, strip, edge);
         return;
     }
 #endif
-    screenSpace_.arrange(nullptr, 0, 0); // stub: records the honest "unavailable" status
+    screenSpace_.arrange(nullptr, 0, tickerbar::ReserveEdge::Top); // stub: records the honest "unavailable" status
 }
 void MainComponent::doRestore() { screenSpace_.restore(); }

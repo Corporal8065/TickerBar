@@ -12,19 +12,30 @@ public:
         // desktop shows through. Translucency only — no DWM blur.
         setOpaque(false);
         auto* mc = new MainComponent();
+        content = mc;
         setContentOwned(mc, true);
         setResizable(true, false);
-        setResizeLimits(700, 56, 3840, 300);
+        setResizeLimits(mc->minimumBarWidth(), 56, 3840, 300);
         setBounds(mc->state.windowX, mc->state.windowY, mc->state.windowW, mc->state.windowH);
         setAlwaysOnTop(mc->state.pinned);
         setVisible(true);
     }
     void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
+    // v0.2.0: the reserve machine is EVENT-driven — the window's own
+    // moved/resized notifications are its geometry feed (these fire
+    // for native drags and border resizes too).
+    void moved() override { if (content != nullptr) content->notifyWindowGeometryChanged(); }
+    void resized() override {
+        juce::DocumentWindow::resized();
+        if (content != nullptr) content->notifyWindowGeometryChanged();
+    }
+private:
+    MainComponent* content = nullptr; // owned by the window (setContentOwned) — never delete here
 };
 class TickerBarApp : public juce::JUCEApplication {
 public:
     const juce::String getApplicationName() override { return "TickerBar"; }
-    const juce::String getApplicationVersion() override { return "0.1.1"; }
+    const juce::String getApplicationVersion() override { return "0.2.0"; }
     bool moreThanOneInstanceAllowed() override { return false; }
     void initialise(const juce::String&) override {
         // JUCE free-license attribution splash (MeterBar v0.15 pattern):

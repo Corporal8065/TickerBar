@@ -5,6 +5,7 @@
 #include <tickerbar/Stale.hpp>
 #include <functional>
 #include <map>
+#include <set>
 // Price poller (v0.1.1). Replaces v0.1's Hyperliquid client: that API
 // geo-blocks US IP addresses, so the bar showed a permanent "no
 // connection" on US PCs. Both sources here are keyless and
@@ -35,6 +36,12 @@ public:
     // Message-thread reads (internally locked):
     tickerbar::MarketSnapshot snapshot() const;
     std::vector<tickerbar::Candle> candlesFor(const std::string& symbol) const;
+    // v0.2.0 detail ranges: cached candles for a timescale; an empty
+    // vector means "not fetched yet" OR "the feed cannot supply it" —
+    // detailNote() distinguishes the two in words.
+    std::vector<tickerbar::Candle> candlesFor(const std::string& symbol, tickerbar::DetailRange range) const;
+    void requestCandles(const std::string& symbol, tickerbar::DetailRange range); // message thread: queue a fetch, wake the poller
+    std::string detailNote(const std::string& symbol, tickerbar::DetailRange range) const;
     // Watchlist validation universe: Coinbase SYM-USD bases + the
     // CoinGecko-routed symbols (HYPE). Empty until /products lands —
     // Settings shows its "coin list hasn't loaded yet" message then.
@@ -49,6 +56,7 @@ private:
     std::optional<std::string> getText(const juce::String& url, int maxBytes);
     bool fetchStats(const std::string& symbol, juce::int64 nowMs);
     bool fetchCandles(const std::string& symbol, juce::int64 nowMs);
+    bool fetchDetailCandles(const std::string& symbol, tickerbar::DetailRange range, juce::int64 nowMs);
     bool fetchProducts(juce::int64 nowMs);
     bool fetchGecko(const std::vector<std::string>& syms, juce::int64 nowMs);
 
@@ -56,6 +64,16 @@ private:
     std::map<std::string, tickerbar::AssetCtx> bySymbol;
     std::map<std::string, std::vector<tickerbar::Candle>> candleCache;
     std::map<std::string, juce::int64> candleFetchedMs;
+    struct RangeKey {
+        std::string symbol; tickerbar::DetailRange range;
+        bool operator<(const RangeKey& o) const {
+            return symbol != o.symbol ? symbol < o.symbol : (int)range < (int)o.range;
+        }
+    };
+    std::map<RangeKey, std::vector<tickerbar::Candle>> detailCache;
+    std::map<RangeKey, juce::int64> detailFetchedMs;
+    std::map<RangeKey, std::string> detailNotes;
+    std::set<RangeKey> pendingDetail;
     std::map<std::string, juce::int64> symbolOkMs;
     std::vector<std::string> products; // sorted Coinbase USD bases
     std::vector<std::string> watch;

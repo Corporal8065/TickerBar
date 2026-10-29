@@ -15,6 +15,8 @@
 #include <tickerbar/Alerts.hpp>
 #include <tickerbar/Stale.hpp>
 #include <tickerbar/Arrange.hpp>
+#include <tickerbar/ReserveState.hpp>
+#include <tickerbar/Layout.hpp>
 #include <tickerbar/State.hpp>
 #ifndef FIXTURES_DIR
 #define FIXTURES_DIR "tests/fixtures"
@@ -335,6 +337,111 @@ int main() {
         CHECK(!contextStale(true, 0));
         CHECK(!contextStale(true, 900));
         CHECK(contextStale(true, 901));
+    }
+
+    // ---------- v0.2.0: reserve machine (MeterBar port) ----------
+    {
+        const IntRect mon{ 0, 0, 1920, 1080 };
+        ReserveMachine m;
+        EdgeGaps flushTop{ 0, 1000, 0, 0 };
+        IntRect barTop{ 0, 0, 1920, 72 };
+        CHECK(m.update(true, flushTop, barTop, mon, 7) == ReserveAction::Register);
+        CHECK(m.reserved() && m.edge() == ReserveEdge::Top);
+        CHECK(m.update(true, flushTop, barTop, mon, 7) == ReserveAction::None); // identical repeat: no flap
+        EdgeGaps deadZone{ 5, 1000, 0, 0 };
+        IntRect barDead{ 0, 5, 1920, 72 };
+        CHECK(m.update(true, deadZone, barDead, mon, 7) == ReserveAction::Update); // geometry drift: exactly one Update
+        CHECK(m.update(true, deadZone, barDead, mon, 7) == ReserveAction::None);
+        EdgeGaps clear{ 40, 1000, 0, 0 };
+        CHECK(m.update(true, clear, IntRect{ 0, 40, 1920, 72 }, mon, 7) == ReserveAction::Release);
+        CHECK(!m.reserved());
+        // dead zone does not dock a non-reserved bar
+        CHECK(m.update(true, deadZone, barDead, mon, 7) == ReserveAction::None);
+        CHECK(!m.reserved());
+        // bottom dock + switch to top in one move
+        EdgeGaps flushBottom{ 1000, 0, 0, 0 };
+        IntRect barBottom{ 0, 1008, 1920, 72 };
+        CHECK(m.update(true, flushBottom, barBottom, mon, 7) == ReserveAction::Register);
+        CHECK(m.edge() == ReserveEdge::Bottom);
+        CHECK(m.update(true, flushTop, barTop, mon, 7) == ReserveAction::Switch);
+        CHECK(m.edge() == ReserveEdge::Top);
+        // toggle off always wins, exactly once
+        CHECK(m.update(false, flushTop, barTop, mon, 7) == ReserveAction::Release);
+        CHECK(m.update(false, flushTop, barTop, mon, 7) == ReserveAction::None);
+        // strip rect: full-width strip anchored at the edge, bar thickness
+        IntRect strip = ReserveMachine::stripRect(ReserveEdge::Bottom, barBottom, mon);
+        CHECK(strip == IntRect({ 0, 1008, 1920, 72 }));
+        // tall bar docks left/right only
+        ReserveMachine m2;
+        EdgeGaps flushLeft{ 0, 0, 0, 900 };
+        CHECK(m2.update(true, flushLeft, IntRect{ 0, 0, 72, 1080 }, mon, 7) == ReserveAction::Register);
+        CHECK(m2.edge() == ReserveEdge::Left);
+    }
+    // ---------- v0.2.0: edge-aware arrange ----------
+    {
+        const IntRect mon{ 0, 0, 1920, 1080 };
+        IntRect w{ 10, 100, 800, 600 };
+        IntRect fitL = arrangeFit(w, mon, ReserveEdge::Left, 72);
+        CHECK(fitL.x == 72 && fitL.w == 800);
+        IntRect fitR = arrangeFit(IntRect{ 1800, 100, 800, 600 }, mon, ReserveEdge::Right, 72);
+        CHECK(fitR.x + fitR.w == 1920 - 72);
+        CHECK(arrangeFreeArea(mon, ReserveEdge::Left, 72) == IntRect({ 72, 0, 1848, 1080 }));
+        CHECK(arrangeFreeArea(mon, ReserveEdge::Bottom, 72) == IntRect({ 0, 0, 1920, 1008 }));
+        // legacy wrappers still agree with the edge-aware core
+        IntRect under{ 100, 10, 800, 600 };
+        CHECK(arrangeFit(under, mon, 72) == arrangeFit(under, mon, ReserveEdge::Top, 72));
+        CHECK(arrangeFitAbove(under, mon, 72) == arrangeFit(under, mon, ReserveEdge::Bottom, 72));
+    }
+    // ---------- v0.2.0: cell layout — the % is never truncated ----------
+    {
+        // measured widths at the render fonts (approx JUCE metrics):
+        // symbol "BTC" bold 13.5 ~ 30 px; pct "-12.34%" bold 12.5 ~ 58 px
+        for (int contentW = 40; contentW <= 200; contentW += 4) {
+            auto l = coinCellTopRow(contentW, 30, 58);
+            CHECK(pctFullyVisible(l, 58) || contentW < 58); // % full whenever the row can hold it at all
+            CHECK(l.symbolW + l.gap + l.pctW <= contentW);
+        }
+        auto wide = coinCellTopRow(180, 30, 58);
+        CHECK(wide.pctW == 58 && wide.symbolW == 180 - 58 - kTopRowGapPx);
+        auto minCell = minCoinCellWidth(30, 58);
+        auto atMin = coinCellTopRow(minCell - kCellPadPx, 30, 58);
+        CHECK(pctFullyVisible(atMin, 58));
+        CHECK(atMin.symbolW >= kMinSymbolPx);
+        auto full = fullCoinCellWidth(30, 58);
+        auto atFull = coinCellTopRow(full - kCellPadPx, 30, 58);
+        CHECK(atFull.symbolW >= 30 && pctFullyVisible(atFull, 58));
+    }
+    // ---------- v0.2.0: 1h change from hourly candles ----------
+    {
+        std::vector<Candle> cs;
+        const int64_t h = 3600LL * 1000LL;
+        for (int i = 0; i < 25; ++i) {
+            Candle c; c.tOpenMs = i * h; c.open = c.low = c.high = 100.0 + i; c.close = 100.0 + i; c.volume = 1.0;
+            cs.push_back(c);
+        }
+        auto p1h = changePct1h(cs);
+        CHECK(p1h && near(*p1h, (124.0 / 123.0 - 1.0) * 100.0, 1e-6)); // last close vs the candle 1h earlier
+        CHECK(!changePct1h({ cs.front() }));                            // one candle: no hour of history
+        std::vector<Candle> half{ cs[0], cs[1] };
+        half[1].tOpenMs = h / 2;                                        // 30 min spacing: still no full hour back
+        CHECK(!changePct1h(half));
+        // candle range / volume honesty
+        auto r = candleRange(cs);
+        CHECK(r && r->hasVolume && near(r->maxVolume, 1.0));
+        for (auto& c : cs) c.volume = 0.0;                              // CoinGecko closes-only shape
+        auto r2 = candleRange(cs);
+        CHECK(r2 && !r2->hasVolume && r2->hi >= r2->lo);
+        CHECK(!candleRange({}));
+    }
+    // ---------- v0.2.0: alert notification text + new state defaults ----------
+    {
+        AlertLevels lv; lv.above = 100.0; lv.below = 90.0;
+        CHECK(alertNotificationText("BTC", AlertCrossedAbove, lv, 101.5).find("BTC crossed above") == 0);
+        CHECK(alertNotificationText("BTC", AlertCrossedBelow, lv, 88.0).find("BTC crossed below") == 0);
+        CHECK(alertNotificationText("BTC", AlertNone, lv, 95.0).empty());
+        TickerState st;
+        CHECK(st.alertToasts == true);
+        CHECK(st.linkEnabled == false);
     }
 
     std::printf("\n%d checks, %d failures\n", checks, failures);

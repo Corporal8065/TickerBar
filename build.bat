@@ -1,7 +1,7 @@
 @echo off
-title TickerBar Build v0.1.1
+title TickerBar Build v0.2.0
 REM ===========================================================
-REM  TickerBar - one-click Windows 11 build (v0.1.1)
+REM  TickerBar - one-click Windows 11 build (v0.2.0)
 REM  Finds CMake via vswhere (official VS locator), PATH, the
 REM  VS-bundled copy (2026/2022/2019, any edition, any drive
 REM  registered with the installer), or a standalone CMake.
@@ -11,11 +11,11 @@ REM ===========================================================
 setlocal
 cd /d "%~dp0"
 set "LOG=%CD%\build-log.txt"
-echo TickerBar build log v0.1.1 > "%LOG%"
+echo TickerBar build log v0.2.0 > "%LOG%"
 echo Date: %DATE% %TIME% >> "%LOG%"
 echo.
 echo ============================================================
-echo  TickerBar build v0.1.1 - this window stays open when done.
+echo  TickerBar build v0.2.0 - this window stays open when done.
 echo  Everything checked is written to build-log.txt.
 echo ============================================================
 echo.

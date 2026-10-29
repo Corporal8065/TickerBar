@@ -1,6 +1,8 @@
 #pragma once
 #include <cmath>
 #include <limits>
+#include <string>
+#include "Format.hpp"
 namespace tickerbar {
 // Price-cross alerts. The tracker is a PURE state machine — same inputs,
 // same events, no clocks, no I/O — so the unit suite grades it exactly.
@@ -57,4 +59,16 @@ struct AlertTracker {
     // tick re-primes against the new levels (no stale crossings).
     void reset() { primed = false; wasAbove = wasBelow = false; }
 };
+
+// Notification text for a crossing (v0.2.0, Windows toast): one line
+// naming the symbol, the direction, the level crossed and the price
+// that crossed it. Empty string for AlertNone — no event, no toast.
+inline std::string alertNotificationText(const std::string& symbol, unsigned ev,
+                                         const AlertLevels& lv, double price) {
+    if (ev & AlertCrossedAbove)
+        return symbol + " crossed above " + formatPrice(lv.above) + " - now " + formatPrice(price);
+    if (ev & AlertCrossedBelow)
+        return symbol + " crossed below " + formatPrice(lv.below) + " - now " + formatPrice(price);
+    return "";
+}
 } // namespace tickerbar

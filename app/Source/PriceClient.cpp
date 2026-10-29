@@ -35,6 +35,33 @@ std::vector<tickerbar::Candle> PriceClient::candlesFor(const std::string& symbol
     auto it = candleCache.find(symbol);
     return it == candleCache.end() ? std::vector<tickerbar::Candle>{} : it->second;
 }
+std::vector<tickerbar::Candle> PriceClient::candlesFor(const std::string& symbol,
+                                                         tickerbar::DetailRange range) const {
+    juce::ScopedLock sl(const_cast<juce::CriticalSection&>(lock));
+    auto it = detailCache.find(RangeKey{ symbol, range });
+    if (it != detailCache.end()) return it->second;
+    if (range == tickerbar::DetailRange::H24) {
+        auto it24 = candleCache.find(symbol);
+        if (it24 != candleCache.end()) return it24->second;
+    }
+    return {};
+}
+void PriceClient::requestCandles(const std::string& symbol, tickerbar::DetailRange range) {
+    {
+        juce::ScopedLock sl(lock);
+        RangeKey key{ symbol, range };
+        auto it = detailFetchedMs.find(key);
+        const juce::int64 now = juce::Time::currentTimeMillis();
+        if (it != detailFetchedMs.end() && now - it->second < 240000) return; // same ~4 min throttle as the 24h candles
+        pendingDetail.insert(key);
+    }
+    notify(); // wake the poll thread out of its cadence sleep
+}
+std::string PriceClient::detailNote(const std::string& symbol, tickerbar::DetailRange range) const {
+    juce::ScopedLock sl(const_cast<juce::CriticalSection&>(lock));
+    auto it = detailNotes.find(RangeKey{ symbol, range });
+    return it == detailNotes.end() ? std::string{} : it->second;
+}
 std::vector<std::string> PriceClient::tradableSymbols() const {
     juce::ScopedLock sl(const_cast<juce::CriticalSection&>(lock));
     auto out = products;
@@ -72,7 +99,7 @@ std::optional<std::string> PriceClient::getText(const juce::String& url, int max
     juce::URL u(url);
     auto opts = juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
                     .withConnectionTimeoutMs(10000)
-                    .withExtraHeaders("User-Agent: TickerBar/0.1.1\r\nAccept: application/json");
+                    .withExtraHeaders("User-Agent: TickerBar/0.2.0\r\nAccept: application/json");
     std::unique_ptr<juce::InputStream> in(u.createInputStream(opts));
     if (in == nullptr) return std::nullopt;
     auto text = in->readEntireStreamAsString();
@@ -103,8 +130,46 @@ bool PriceClient::fetchCandles(const std::string& symbol, juce::int64 nowMs) {
     auto parsed = tickerbar::parseCoinbaseCandles(*text);
     if (!parsed) return false;
     juce::ScopedLock sl(lock);
-    candleCache[symbol] = std::move(*parsed);
+    candleCache[symbol] = *parsed;
+    detailCache[RangeKey{ symbol, tickerbar::DetailRange::H24 }] = *parsed;
+    detailFetchedMs[RangeKey{ symbol, tickerbar::DetailRange::H24 }] = nowMs;
     candleFetchedMs[symbol] = nowMs;
+    return true;
+}
+
+// Detail timescales (v0.2.0). FEED LIMITS, stated plainly:
+//  - Coinbase candles: one request returns at most 300 candles.
+//    24h and 7d therefore use 1h granularity (24 / 168 candles);
+//    30d uses 1d granularity (30 candles) — daily candles are the
+//    finest 30d series the feed can supply in one honest request.
+//  - CoinGecko (HYPE): the markets payload carries a 7d hourly
+//    sparkline of CLOSES ONLY. 24h = its trailing 25 points, 7d = all
+//    of it; 30d is NOT available from this feed and is reported as
+//    such — never backfilled, never fabricated. No OHLC, no volume.
+bool PriceClient::fetchDetailCandles(const std::string& symbol, tickerbar::DetailRange range,
+                                     juce::int64 nowMs) {
+    if (tickerbar::sourceForSymbol(symbol) == tickerbar::PriceSource::CoinGecko) {
+        // Served out of the markets payload by fetchGecko; a detail
+        // request just pulls that payload forward.
+        return fetchGecko({ symbol }, nowMs);
+    }
+    const juce::int64 hourMs = 3600LL * 1000LL, dayMs = 24LL * hourMs;
+    juce::int64 spanMs = dayMs; int granularity = 3600;
+    if (range == tickerbar::DetailRange::D7) spanMs = 7LL * dayMs;
+    if (range == tickerbar::DetailRange::D30) { spanMs = 30LL * dayMs; granularity = 86400; }
+    juce::URL u("https://api.exchange.coinbase.com/products/" + juce::String(symbol) + "-USD/candles");
+    u = u.withParameter("granularity", juce::String(granularity))
+          .withParameter("start", iso8601Utc(nowMs - spanMs))
+          .withParameter("end", iso8601Utc(nowMs));
+    auto text = getText(u.toString(true), 1024 * 1024);
+    if (!text) return false;
+    auto parsed = tickerbar::parseCoinbaseCandles(*text);
+    if (!parsed) return false;
+    juce::ScopedLock sl(lock);
+    RangeKey key{ symbol, range };
+    detailCache[key] = std::move(*parsed);
+    detailFetchedMs[key] = nowMs;
+    detailNotes.erase(key);
     return true;
 }
 
@@ -148,6 +213,21 @@ bool PriceClient::fetchGecko(const std::vector<std::string>& syms, juce::int64 n
                 // sparkline (the payload's 7d series, last 25 points).
                 candleCache[s] = tickerbar::candlesFromHourlySeries(q.sparkline7d, nowMs, 25);
                 candleFetchedMs[s] = nowMs;
+                // Detail ranges from the same payload: 24h (trailing
+                // 25 hourly closes) and 7d (the whole sparkline).
+                // 30d is beyond this feed — recorded as a note, and
+                // the cache entry stays absent so nothing is drawn.
+                detailCache[RangeKey{ s, tickerbar::DetailRange::H24 }] = candleCache[s];
+                detailFetchedMs[RangeKey{ s, tickerbar::DetailRange::H24 }] = nowMs;
+                detailCache[RangeKey{ s, tickerbar::DetailRange::D7 }] =
+                    tickerbar::candlesFromHourlySeries(q.sparkline7d, nowMs, q.sparkline7d.size());
+                detailFetchedMs[RangeKey{ s, tickerbar::DetailRange::D7 }] = nowMs;
+                detailNotes[RangeKey{ s, tickerbar::DetailRange::D30 }] =
+                    "CoinGecko's free feed carries a 7-day hourly sparkline only - no 30d series. Nothing is backfilled.";
+                detailNotes[RangeKey{ s, tickerbar::DetailRange::H24 }] =
+                    "CoinGecko supplies hourly closes only - no OHLC range, no volume.";
+                detailNotes[RangeKey{ s, tickerbar::DetailRange::D7 }] =
+                    "CoinGecko supplies hourly closes only - no OHLC range, no volume.";
                 found = true;
                 break;
             }
@@ -167,6 +247,17 @@ void PriceClient::run() {
             (tickerbar::sourceForSymbol(s) == tickerbar::PriceSource::CoinGecko ? cgSyms : cbSyms).push_back(s);
 
         bool dueFailed = false, storedNew = false;
+
+        // v0.2.0: queued detail-range fetches first (a click on the
+        // detail card wakes the thread via notify()).
+        {
+            std::set<RangeKey> pending;
+            { juce::ScopedLock sl(lock); pending = pendingDetail; pendingDetail.clear(); }
+            for (auto& key : pending) {
+                if (threadShouldExit()) break;
+                if (fetchDetailCandles(key.symbol, key.range, now)) storedNew = true;
+            }
+        }
 
         // Validation universe: fetch until loaded, refresh ~30 min.
         {

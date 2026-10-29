@@ -1,5 +1,105 @@
 # TickerBar — BUILD LOG
 
+## v0.2.0 (2026-10-29) — field-test fixes + detail charts + family release flow
+
+Built from Jackson's 2026-10-29 field test (his screenshot showed both
+P1 bugs live) and his same-day feature requests. Per-item proof lives
+in REQUESTS.md; summary here.
+
+- **(a) % truncation fixed.** The old cell gave the symbol a fixed
+  64 px and the % the leftovers — at narrow widths the % elided to
+  "-1....". New pure-core layout rule (`Layout.hpp`): the % string is
+  measured at its render font and reserved in full; the symbol takes
+  the remainder and is the only text that may clip. The price row uses
+  the same rule for the new 1h %. The window now enforces a minimum
+  width computed from `minCoinCellWidth()` per watched cell with
+  worst-case % strings, so the guarantee holds at every supported
+  width — the floor grows with the watchlist.
+- **(b) Reserve flicker fixed.** Root cause was the known MeterBar
+  v0.18 pattern, still present here: a 4 Hz timer poll re-asserting
+  the AppBar, comparing the requested rect against the rect Windows
+  GRANTED (post-QUERYPOS, system-trimmed — never equal), tearing the
+  reservation down and rebuilding it several times a second while
+  maximised windows bounced. Ported MeterBar's fix wholesale: the
+  pure-core `ReserveMachine` (transitions only, dock ≤2 px / release
+  >8 px hysteresis, all four edges, full-strip requested rects),
+  event-fed from MainWindow moved/resized; ScreenSpace idempotency
+  compares against the REQUESTED rect. The **Dock** control moved
+  onto the bar (button cycles Top/Bottom/Left/Right and snaps);
+  `DockEdge` and the Settings combo now carry all four edges, and
+  Arrange uses the machine's actual/nearest edge.
+- **(c) Detail chart rebuilt.** Candlesticks (wick + body) over
+  volume bars, 24h / 7d / 30d radio ranges, 1 s refresh against the
+  client cache with throttled on-demand fetches. **Feed limits,
+  plainly:** Coinbase returns at most 300 candles per request —
+  24h = 24 hourly, 7d = 168 hourly, 30d = 30 DAILY candles (the
+  finest honest 30d). CoinGecko (HYPE) carries a 7d hourly sparkline
+  of closes only: 24h/7d draw as flat ticks with no volume bars (the
+  chart says "no volume from this feed"), and **30d is reported
+  unavailable in words — never backfilled or fabricated.**
+- **(d)** Clicking the Fear & Greed cell opens
+  https://alternative.me/crypto/fear-and-greed-index/ in the default
+  browser (click vs drag distinguished by the family's 5 px rule).
+- **(e) 1h %** on every cell's price row and in the detail card,
+  derived in the core from the already-fetched hourly candles
+  (`changePct1h`); nothing shown when the series doesn't reach back
+  a full hour. No new API calls.
+- **(f) Toast notifications** on alert crossings (Settings → Alerts,
+  default ON): `ToastNotifier` uses a Shell_NotifyIcon balloon — the
+  supported route for an unpackaged exe with no registered
+  AppUserModelID; text built by the core's `alertNotificationText`
+  and unit-tested. A TickerBar tray icon exists after the first toast.
+- **Release workflow (Jackson's addition):**
+  `.github/workflows/build-windows.yml`, adapted from MeterBar's —
+  a `v*` tag builds the app, runs the core suite, compiles the Inno
+  installer and attaches `TickerBar-Setup.exe` to the tag's GitHub
+  Release; the job refuses a tag that doesn't match the CMakeLists
+  version. `TickerBar.iss` gained the `#ifndef MyAppVersion` guard
+  the CI `/D` override needs. **No tag was created by this work.**
+- **README + theme parity (Jackson's additions).** README.md rebuilt
+  in MeterBar's structure (centred header, CI badge, Features /
+  Install / Build / Gallery / family). The Gallery is a
+  screenshots-wanted list ONLY — no Windows captures of TickerBar
+  exist yet, and per the standing gallery honesty rule nothing
+  borrowed or faked stands in. Theme parity: the default theme is
+  the family **Midnight Kids** palette, verified value-for-value
+  identical to MeterBar's default (all twelve Theme colours and the
+  styled-background gradient stops match exactly).
+- **State:** new persisted fields `alertToasts` (default true) and
+  `linkEnabled` (default false — the P4 linking state field; the
+  linking component itself is OPEN, see REQUESTS.md). Old settings
+  files load unchanged (defaults-first).
+
+Kit file: `tickerbar-test-kit-v0.2.0.zip` — same layout as v0.1.1,
+plus `REQUESTS.md`, `.github/workflows/build-windows.yml`, the new
+core headers (`ReserveState.hpp`, `Layout.hpp`) and
+`app/Source/ToastNotifier.{h,cpp}`.
+
+Verified (Linux VM; Windows behaviour is the README field tests' job):
+- **Core suite: 307 checks, 0 failures** (was 186) — in tree AND
+  rebuilt from the shipped kit contents. New coverage: the ported
+  reserve machine (register / dead-zone None / single Update /
+  release / edge Switch / toggle-off / strip rects / tall-bar side
+  docking), edge-aware arrange (left/right + legacy-wrapper
+  agreement), the cell-layout invariant (sweep of widths; minimum-
+  width checks), 1h-change math incl. insufficient-history, candle
+  range/volume honesty, alert notification text, new state defaults.
+- **App translation units syntax-checked clean** against JUCE 8.0.4
+  headers (Main, MainComponent, PriceClient, ContextClient,
+  ScreenSpace, ToastNotifier). The full CMake app build could not
+  run here: the nested juceaide build fails on this VM with
+  `X11/extensions/Xrandr.h: No such file or directory` (no
+  libxrandr-dev installed) — an environment gap, recorded in
+  REQUESTS.md; the new CI workflow builds the app on windows-latest.
+  MinGW (previous releases' Windows-TU proof) is not installed on
+  this VM this session either; the Windows branches keep v0.1.1's
+  proven structure.
+
+Honest limits: live Windows behaviour (reserve stability against
+real windows, toast rendering, drag feel) is field-test territory —
+README_TEST.md items 9, 12–15 cover the new surface click-by-click.
+Linking (P4 item k) is NOT in this release; see REQUESTS.md.
+
 ## v0.1.1 (2026-10-29) — data-source swap: the "no connection" fix
 
 **Root cause, plainly:** v0.1 read prices from the Hyperliquid public

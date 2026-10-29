@@ -4,6 +4,7 @@
 #include <tickerbar/State.hpp>
 #include <tickerbar/Alerts.hpp>
 #include <tickerbar/Model.hpp>
+#include <tickerbar/ReserveState.hpp>
 #include <map>
 #include <vector>
 #include "Theme.h"
@@ -11,6 +12,7 @@
 #include "ContextClient.h"
 #include "ScreenSpace.h"
 #include "ClickPlayer.h"
+#include "ToastNotifier.h"
 class CoinCell;
 class ContextCell;
 class TickerSettingsWindow;
@@ -41,6 +43,9 @@ public:
     void setAlerts(const std::string& symbol, double above, double below);
     void settingsChanged(bool watchlistToo); // apply + persist; watchlistToo also rebuilds cells and the client list
     void rebuildSettingsDeferred();
+    void notifyWindowGeometryChanged(); // MainWindow moved/resized feed (reserve-machine events, v0.2.0)
+    int minimumBarWidth() const;        // supported-width floor: every cell's % fully visible (Layout.hpp)
+    void cycleDockEdge();               // the on-bar Dock button: Top -> Bottom -> Left -> Right
     void snapToDockEdge();
     void doArrange();
     void doRestore();
@@ -62,13 +67,15 @@ private:
     ContextClient contextClient_;
     std::unique_ptr<ContextCell> fngCell_, domCell_;
     ScreenSpace screenSpace_;
+    tickerbar::ReserveMachine reserveMachine_;
+    ToastNotifier toastNotifier_;
     ClickPlayer clickPlayer_;
     std::vector<std::unique_ptr<CoinCell>> cells_;
     std::map<std::string, tickerbar::AlertTracker> trackers_;
     std::unique_ptr<TickerSettingsWindow> settingsWin_;
 
     juce::Label wordmark_, versionLabel_, statusLabel_;
-    juce::TextButton reserveBtn_ { "Reserve" }, settingsBtn_ { "Settings" },
+    juce::TextButton reserveBtn_ { "Reserve" }, dockBtn_ { "Top" }, settingsBtn_ { "Settings" },
                      minBtn_ { "-" }, quitBtn_ { "X" };
     juce::ComponentDragger dragger_;
     juce::Rectangle<int> lastSavedBounds_;

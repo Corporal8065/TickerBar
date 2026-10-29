@@ -8,7 +8,7 @@ namespace tickerbar {
 // this 1:1 to a JSON settings file (app/Source/SettingsStore.h); the
 // core tests pin the defaults.
 enum class BackgroundStyle { CleanDark, MidnightKids, Flat };
-enum class DockEdge { Top, Bottom };
+enum class DockEdge { Top, Bottom, Left, Right };
 
 struct TickerState {
     // Watchlist — Jackson/Vishona's default trio.
@@ -16,6 +16,8 @@ struct TickerState {
     // Price alerts per symbol (levels only; NaN = unset).
     std::map<std::string, AlertLevels> alerts;
     bool alertSound = false;       // soft click on a cross — default OFF (spec)
+    bool alertToasts = true;       // v0.2.0: Windows toast on a cross — ON (Jackson's request); toggle in Settings
+    bool linkEnabled = false;      // v0.2.0: family linking (snap/drag-follow/shared background) — opt-in, default OFF
     // Appearance — MeterBar family: Midnight Kids theme, styled
     // background, opacity slider (bar defaults fully solid: it is a
     // read-at-a-glance instrument, not a meter overlay).

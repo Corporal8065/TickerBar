@@ -31,6 +31,8 @@ inline juce::var toVar(const tickerbar::TickerState& s) {
     }
     set("alerts", juce::var(alertsObj));
     set("alertSound", s.alertSound);
+    set("alertToasts", s.alertToasts);
+    set("linkEnabled", s.linkEnabled);
     set("theme", juce::String(s.themeName));
     set("bgStyle", (int)s.backgroundStyle);
     set("bgOpacity", s.backgroundOpacity);
@@ -71,13 +73,15 @@ inline tickerbar::TickerState fromVar(const juce::var& v) {
         }
     }
     s.alertSound = gb("alertSound", s.alertSound);
+    s.alertToasts = gb("alertToasts", s.alertToasts);
+    s.linkEnabled = gb("linkEnabled", s.linkEnabled);
     s.themeName = g("theme").toString().toStdString();
     if (s.themeName.empty()) s.themeName = "Midnight Kids";
     s.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 2, gi("bgStyle", (int)s.backgroundStyle));
     s.backgroundOpacity = juce::jlimit(0.15f, 1.0f, gf("bgOpacity", s.backgroundOpacity));
     s.pinned = gb("pinned", s.pinned);
     s.reserveScreenSpace = gb("reserveSpace", s.reserveScreenSpace);
-    s.dockEdge = (tickerbar::DockEdge)juce::jlimit(0, 1, gi("dockEdge", (int)s.dockEdge));
+    s.dockEdge = (tickerbar::DockEdge)juce::jlimit(0, 3, gi("dockEdge", (int)s.dockEdge));
     s.windowX = gi("winX", s.windowX); s.windowY = gi("winY", s.windowY);
     s.windowW = juce::jlimit(420, 3840, gi("winW", s.windowW));
     s.windowH = juce::jlimit(52, 300, gi("winH", s.windowH));

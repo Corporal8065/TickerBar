@@ -1,4 +1,4 @@
-TickerBar v0.1.1 - crypto ticker bar (BTC / ETH / HYPE by default)
+TickerBar v0.2.0 - crypto ticker bar (BTC / ETH / HYPE by default)
 
 v0.1.1 fixes v0.1's "no connection" on US PCs: v0.1 read prices from
 Hyperliquid, which blocks US IP addresses. Prices now come from
