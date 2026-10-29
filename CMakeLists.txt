@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(TickerBar VERSION 0.3.0 LANGUAGES C CXX)
+project(TickerBar VERSION 0.3.1 LANGUAGES C CXX)
 # Static MSVC runtime (/MT) so a built TickerBar.exe runs on a friend's
 # PC with NO Visual C++ Redistributable installed (MeterBar v0.15 rule).
 # Must be set before any target is created (CMP0091). MSVC-only.

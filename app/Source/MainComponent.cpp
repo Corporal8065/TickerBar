@@ -11,8 +11,8 @@
 #if JUCE_WINDOWS
  #include <windows.h> // native rects for the AppBar sync (physical pixels)
 #endif
-static const char* kVersion = "v0.3.0";
-static const char* kVersionNum = "0.3.0";
+static const char* kVersion = "v0.3.1";
+static const char* kVersionNum = "0.3.1";
 static juce::String dockEdgeName(tickerbar::DockEdge e) {
     switch (e) {
         case tickerbar::DockEdge::Top: return "Top";
@@ -643,7 +643,7 @@ public:
         });
         panel("About", [&]{
             button("Check for updates", [this]{ owner->checkForUpdates(); });
-            note("TickerBar v0.3.0 - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
+            note("TickerBar v0.3.1 - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
             note("Detail chart: candlesticks + volume with 24h / 7d / 30d ranges. Coinbase caps one candles request at 300: 24h/7d are hourly, 30d is daily. CoinGecko (HYPE) supplies hourly closes only - no OHLC, no volume, no 30d - and the chart note says so.");
             note("Polls every N seconds (Window panel). If the feed drops, cells grey out and keep the last real prices, marked STALE - never fake-fresh numbers.");
             note("Context cells: Fear & Greed index (alternative.me) and BTC dominance (CoinGecko) poll separately every ~5 minutes and go stale on their own clock - they never block prices.");

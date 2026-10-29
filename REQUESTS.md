@@ -4,7 +4,7 @@ Verification rule (Jackson, 2026-10-29): every item is DONE only with
 proof — the full core suite green after the change, new checks for new
 behaviour, and errors recorded here with their actual text, never hidden.
 
-## Landed on main 2026-10-29 (post-v0.3.0, unreleased — Vishona's first request, via #crypto-book)
+## v0.3.1 (2026-10-29) — Vishona's first request, via #crypto-book
 
 - **Context cells: hide/show + adjustable width.** Fear & Greed and
   BTC dominance were fixed 112 px chrome, always shown. Now:
@@ -28,8 +28,11 @@ behaviour, and errors recorded here with their actual text, never hidden.
   defaults/clamps in `contextCellExtent`, and the pair-drag math
   at the context floor). The JUCE app layer cannot be compiled on
   this VM — its proof is the push's GitHub Actions Windows build,
-  as with prior rounds. NO version bump and NO tag: Jackson ships
-  the release himself after his field test.
+  as with prior rounds. Released as v0.3.1: version bumped in the
+  same spots the v0.3.0 bump touched and tagged; the tag's
+  Actions run builds and publishes the release. (Milo ships
+  Vishona's bar changes per Jackson's 2026-10-29 standing
+  instruction.)
 
 ## v0.2.1 (2026-10-29, later the same night — Jackson's follow-up: TickerBar gets a working release)
 
