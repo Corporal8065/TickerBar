@@ -68,6 +68,10 @@ TickerBar is one of a small family of edge-of-screen bars. Its siblings live in 
 - **MeterBar** — a pretty audio meter bar (spectrum, waveform, loudness, stereometer, oscilloscope) — the family's first app, and the source of the shared Midnight Kids look.
 - **SessionBar** — market-session countdowns (New York / London / Tokyo) in the same strip format.
 
+## Requests & feedback
+
+Using TickerBar and want something changed, added, or fixed? Open an **issue** (the *Issues* tab above) — there's a short form for feature requests and one for bugs, no technical knowledge needed. Requests posted there are picked up and built into future releases.
+
 ---
 
 *Built with [JUCE](https://juce.com) and a hand-rolled market-data core. Made with JUCE — free-license attribution.*
