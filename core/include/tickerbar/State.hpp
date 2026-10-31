@@ -38,6 +38,7 @@ struct TickerState {
     bool clickSounds = false;       // UI click sounds on bar buttons (MeterBar parity) — default OFF
     int dataColorScheme = 0;        // DataColors scheme ordinal (0 = Family)
     int bgEffect = 0;               // background effect: 0 styled, 1 visualizer particles, 2 reactive glow
+    int vizStyle = 0;               // v0.5.8: visualizer style — 0 Bubbles (particles), 1 Lines (flowing ribbons); rides the link packet as bgEffect 1 vs 3 (BLK4)
     float vizHue = 0.83f, vizSat = 0.85f, vizSpread = 0.75f, vizCycle = 24.f; // visualizer/glow palette
     std::map<std::string, int> cellWidths; // per-symbol explicit cell width px (absent = auto-share)
     // Context cells (Fear & Greed / BTC dominance) — post-v0.3.0,

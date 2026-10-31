@@ -654,9 +654,11 @@ public:
             note("Data colours drive the gain/loss text and the sparklines. Family = the theme's own green/red; the others are pairs of stops from MeterBar's colour maps.");
             combo("Background effect", {"Styled background", "Visualizer particles", "Reactive glow"}, st->bgEffect,
                   [&](int v){ st->bgEffect = v; });
+            combo("Visualizer style", {"Bubbles (particles)", "Lines (flowing ribbons)"}, st->vizStyle,
+                  [&](int v){ st->vizStyle = v; }); // v0.5.8: Jackson's second style, beside the effect choice
             toggle("Link background (share style, opacity and effect with linked bars)", st->linkBackground,
                    [&](bool b){ st->linkBackground = b; owner->onBgLinkToggled(); });
-            note("Visualizer: MeterBar's particle brushes (transient-fired emitters shedding strands of dots). Reactive glow: the MiniMeters-style blurred bloom - linked to MeterBar it pulses with the music; on its own it breathes gently. Both render UNDER the cells.");
+            note("Visualizer: MeterBar's particle brushes (transient-fired emitters shedding strands of dots) — or the Lines style: three flowing ribbons, one per band, spring-smoothed and near-still in quiet. Reactive glow: the MiniMeters-style blurred bloom - linked to MeterBar it pulses with the music; on its own it breathes gently. Both render UNDER the cells.");
             slider("Effect palette hue", 0.0, 1.0, st->vizHue, [&](double v){ st->vizHue = (float)v; });
             slider("Effect palette saturation", 0.0, 1.0, st->vizSat, [&](double v){ st->vizSat = (float)v; });
             slider("Effect palette spread", 0.0, 1.0, st->vizSpread, [&](double v){ st->vizSpread = (float)v; });
@@ -863,11 +865,15 @@ MainComponent::MainComponent() {
             w->setBounds(safe.x, safe.y, safe.w, safe.h);
         }
     };
-    linkClient_.getBg = [this]{ return BarLinkClient::Bg{ (int)state.backgroundStyle, state.backgroundOpacity, state.bgEffect }; };
+    linkClient_.getBg = [this]{ return BarLinkClient::Bg{ (int)state.backgroundStyle, state.backgroundOpacity, state.bgEffect == 1 ? (state.vizStyle == 1 ? 3 : 1) : state.bgEffect }; }; // BLK4: the visualizer style rides the effect ordinal (1 Bubbles / 3 Lines)
     linkClient_.applyBg = [this](const BarLinkClient::Bg& bg){
         state.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 3, bg.style);
         state.backgroundOpacity = juce::jlimit(0.05f, 1.0f, bg.opacity);
-        state.bgEffect = juce::jlimit(0, 2, bg.effect); // BLK3: the effect selection rides the packet too
+        // BLK4: effect 3 = the visualizer with the Lines style,
+        // effect 1 = the visualizer with Bubbles; 0/2 as before.
+        if (bg.effect == 3) { state.bgEffect = 1; state.vizStyle = 1; }
+        else if (bg.effect == 1) { state.bgEffect = 1; state.vizStyle = 0; }
+        else state.bgEffect = juce::jlimit(0, 2, bg.effect);
         saveSettings(); repaint(); syncFxPump(); // an adopted visualizer/glow must actually start (or stop)
     };
     linkClient_.getDockedEdge = [this]{
@@ -2174,7 +2180,9 @@ void MainComponent::stepFx() {
     } else {
         tickerbar::ambientBands(fxClock_, bands, level);
     }
-    if (state.bgEffect == 1) viz_.update(dt, bands, vizSettings());
+    // v0.5.8: advance whichever visualizer style is selected —
+    // the particle engine (Bubbles) or the ribbon model (Lines).
+    if (state.bgEffect == 1) { if (state.vizStyle == 1) vizLines_.update(dt, bands); else viz_.update(dt, bands, vizSettings()); }
     else if (state.bgEffect == 2) glow_.update(dt, bands, level);
     if (mascot_ && mascot_->isVisible()) {
         const long long now = juce::Time::currentTimeMillis();
@@ -2221,25 +2229,57 @@ void MainComponent::drawVisualizerBackground(juce::Graphics& g) {
     {
         juce::Graphics ig(vizCache_);
         ig.fillAll(juce::Colours::black);
-        for (auto& pt : viz_.particles()) {
-            auto c = viz_.colorFor(pt, vs);
-            ig.setColour(juce::Colour(c.r, c.g, c.b));
-            float px, py;
-            tickerbar::fieldToLocal(fm, pt.x, pt.y, px, py);
-            const float r = pt.size * 1.35f; // v0.4.0: plumper dots — softer, rounder blobs after the blur
-            if (!tickerbar::fieldDotVisible(px, py, r, iw, ih)) continue; // another bar's slice of the field
-            ig.fillEllipse(px - r, py - r, r * 2.f, r * 2.f);
+        if (state.vizStyle == 1) {
+            // v0.5.8 LINES: three filled ribbons from the core
+            // model — top edge along centreY - halfThick, back
+            // along centreY + halfThick — mapped through the same
+            // group field map as the dots, so a linked strip reads
+            // as one set of lines across the seams. Alpha is the
+            // model's silence gate: quiet = nothing drawn.
+            const float alpha = vizLines_.visibility();
+            if (alpha > 0.01f) {
+                constexpr int n = tickerbar::VisualizerLines::kPoints;
+                for (int band = 0; band < 3; ++band) {
+                    auto c = vizLines_.colorFor(band, vs);
+                    juce::Path path;
+                    for (int i = 0; i < n; ++i) {
+                        float px, py;
+                        tickerbar::fieldToLocal(fm, (float)i / (float)(n - 1),
+                                                vizLines_.centreY(band, i) - vizLines_.halfThick(band, i), px, py);
+                        if (i == 0) path.startNewSubPath(px, py); else path.lineTo(px, py);
+                    }
+                    for (int i = n - 1; i >= 0; --i) {
+                        float px, py;
+                        tickerbar::fieldToLocal(fm, (float)i / (float)(n - 1),
+                                                vizLines_.centreY(band, i) + vizLines_.halfThick(band, i), px, py);
+                        path.lineTo(px, py);
+                    }
+                    path.closeSubPath();
+                    ig.setColour(juce::Colour(c.r, c.g, c.b).withAlpha(alpha * 0.85f));
+                    ig.fillPath(path);
+                }
+            }
+        } else {
+            for (auto& pt : viz_.particles()) {
+                auto c = viz_.colorFor(pt, vs);
+                ig.setColour(juce::Colour(c.r, c.g, c.b));
+                float px, py;
+                tickerbar::fieldToLocal(fm, pt.x, pt.y, px, py);
+                const float r = pt.size * 1.35f; // v0.4.0: plumper dots — softer, rounder blobs after the blur
+                if (!tickerbar::fieldDotVisible(px, py, r, iw, ih)) continue; // another bar's slice of the field
+                ig.fillEllipse(px - r, py - r, r * 2.f, r * 2.f);
+            }
         }
     }
     vizBlur_ = vizCache_;
     vizBlur_.duplicateIfShared();
-    juce::ImageConvolutionKernel kernel(7);
-    kernel.createGaussianBlur(2.8f); // v0.4.0: a real, stronger blur (was 5/1.8) — the vibey wash
+    juce::ImageConvolutionKernel kernel(15);
+    kernel.createGaussianBlur(5.5f); // v0.5.8: a much stronger melt (was 7/2.8) — Jackson: the dots still read as distinct circles; they should smudge together into one wash
     kernel.applyToImage(vizBlur_, vizCache_, vizBlur_.getBounds());
     const float op = juce::jlimit(0.15f, 1.0f, state.backgroundOpacity);
     g.setOpacity(op);
     g.drawImage(vizBlur_, bounds.toFloat());
-    g.setOpacity(0.45f * op); // v0.4.0: the crisp pass backs off — shapes read as soft rounds, not hard dots
+    g.setOpacity(0.30f * op); // v0.5.8: crisp pass backed off further (was 0.45) so the wash, not the dots, is what reads
     g.drawImage(vizCache_, bounds.toFloat());
     g.setOpacity(1.0f);
     // v0.4.0: a dark scrim over the whole effect — the darker,

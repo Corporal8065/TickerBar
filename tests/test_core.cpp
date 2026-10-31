@@ -557,6 +557,12 @@ int main() {
     peer.bgSeq = 8; peer.bgStyle = 0; peer.bgOpacityPct = 90; peer.bgEffect = 1;
     CHECK(bgAdoption(sh, 1, sync, now, out));
     CHECK(out.style == 0 && out.opacityPct == 90 && out.effect == 1);
+    // BLK4: effect 3 (visualizer Lines) rides the same packet,
+    // adopted verbatim like every other ordinal
+    peer.bgSeq = 12; peer.bgEffect = 3;
+    CHECK(bgAdoption(sh, 1, sync, now, out));
+    CHECK(out.effect == 3);
+    CHECK(!bgIsLocalChange(sync, 0, 90, 3)); // adopted = published: no echo
     // unlinked peers, stale peers, seq 0 and self never supply a background
     peer.linked = 0; peer.bgSeq = 9;
     CHECK(!bgAdoption(sh, 1, sync, now, out));
@@ -761,7 +767,69 @@ int main() {
             auto c = e.colorFor(p, vs);
             if ((int)c.r > brightest) brightest = c.r;
         }
-        CHECK(brightest > 150); // and the whites are back once the bands carry energy
+        // v0.5.8 retune: the intent is unchanged (whites clearly
+        // back once the bands carry energy) but the scale is the
+        // calmed peak now — kAmbientPeak x 255 = 140, not the old
+        // full-brightness 255 this check was written against.
+        CHECK(brightest > 100);
+        CHECK(brightest <= (int)std::lround(255.f * VisualizerEngine::kAmbientPeak) + 1);
+    }
+    // ---------- v0.5.8: calmed whites + Lines style ----------
+    {
+        VisualizerSettings vs; vs.enabled = true;
+        VisualizerEngine e;
+        const float loudMid[3] = { 0, 0.9f, 0 };
+        for (int i = 0; i < 90; ++i) e.update(1.f / 30.f, loudMid, vs); // 3 s of music: gate fully open
+        CHECK(e.ambientVisibility() == 1.f);
+        int peak = 0; bool sawAmbient = false;
+        for (auto& p : e.particles()) {
+            if (p.burst) continue;
+            sawAmbient = true;
+            auto c = e.colorFor(p, vs);
+            if ((int)c.r > peak) peak = (int)c.r;
+        }
+        CHECK(sawAmbient);
+        CHECK(peak <= (int)std::lround(255.f * VisualizerEngine::kAmbientPeak) + 1);
+        CHECK(peak > 60); // still present, not deleted
+        // whites fade OUT at end of life, like the burst dots:
+        VizParticle mid_; mid_.burst = false; mid_.age = 2.f; mid_.life = 4.f;
+        VizParticle old; old.burst = false; old.age = 3.8f; old.life = 4.f;
+        CHECK(e.colorFor(old, vs).r < e.colorFor(mid_, vs).r);
+
+        // Lines: silence = still, thin, invisible
+        VisualizerLines lines;
+        const float silence[3] = { 0, 0, 0 };
+        for (int i = 0; i < 60; ++i) lines.update(1.f / 30.f, silence);
+        CHECK(lines.visibility() == 0.f);
+        CHECK(lines.level(1) == 0.f);
+        CHECK(lines.halfThick(1, 24) <= 0.0045f); // hairline at rest (0.004 x breathe <= 1)
+        bool inRange = true;
+        for (int b = 0; b < 3; ++b)
+            for (int i = 0; i < VisualizerLines::kPoints; ++i) {
+                float y = lines.centreY(b, i);
+                if (!(y > 0.f && y < 1.f)) inRange = false;
+            }
+        CHECK(inRange);
+        // a loud band swells its ribbon
+        const float loudLow[3] = { 0.95f, 0, 0 };
+        const float thickRest = lines.halfThick(0, 24);
+        for (int i = 0; i < 60; ++i) lines.update(1.f / 30.f, loudLow);
+        CHECK(lines.level(0) > 0.5f);
+        CHECK(lines.level(1) == 0.f);
+        CHECK(lines.halfThick(0, 24) > thickRest * 2.f);
+        CHECK(lines.visibility() == 1.f);
+        // spring, not a copy: one frame must NOT slam to target
+        VisualizerLines one;
+        one.update(1.f / 30.f, loudLow);
+        CHECK(one.level(0) < 0.2f);
+        for (int i = 0; i < 30; ++i) lines.update(1.f / 30.f, loudLow);
+        inRange = true;
+        for (int b = 0; b < 3; ++b)
+            for (int i = 0; i < VisualizerLines::kPoints; ++i) {
+                float y = lines.centreY(b, i);
+                if (!(y > 0.f && y < 1.f)) inRange = false;
+            }
+        CHECK(inRange);
     }
     // ---------- v0.4.0: overflow marquee math ----------
     {

@@ -2,6 +2,53 @@
 
 # TickerBar — BUILD LOG
 
+## v0.5.8 (2026-10-31) — Visualizer round: melted blur, calmed whites, Lines style
+
+Jackson (2026-10-31 14:17 PT + reference frames 14:32 PT):
+stronger background blur so the colours smudge into a wash;
+the white bulbs calmed to the colourful dots' movement/energy;
+a new "Lines" visualizer style alongside Bubbles.
+
+- Blur: composite kernel 7/2.8 -> 15/5.5, crisp pass
+  0.45 -> 0.30 (x background opacity) in
+  MainComponent.cpp drawVisualizerBackground. Identical in
+  MeterBar v0.21.5 / SessionBar v0.4.7.
+- Whites (core Visualizer.hpp, identical in all three): ambient
+  ease-out 0.995 -> 0.985 (the burst dots' value); colorFor
+  ambient branch gains the burst-style fade-out over the last
+  30% of life and a peak cap kAmbientPeak = 0.55. Silence gate
+  untouched. The v0.4.0 gate check's ">150" brightness bar was
+  retuned to the capped scale (>100 and <= cap) — the old bar
+  encoded the full-255 behaviour this round removes; intent
+  (whites clearly present with music) preserved, noted in the
+  test itself.
+- Lines: new core VisualizerLines (48 control points x 3 bands;
+  damped-spring levels k=42/d=9; two-sine centreline + baked
+  splitmix wobble; thickness 0.004 + 0.030 x level, breathing
+  along the line; the particle activity gate as visibility).
+  App render: filled ribbon paths via fieldMap into the same
+  half-res cache + blur composite. Settings combo beside
+  "Background effect"; persisted via SettingsStore "vizStyle".
+- Link: BLK4 — kLinkMagic 0x424C4B34 in all three cores (slot
+  layout unchanged); bgEffect domain widened: 1 Bubbles,
+  3 Lines. getBg encodes bgEffect 1 as 1/3 by vizStyle;
+  applyBg decodes 3 -> effect 1 + vizStyle 1, 1 -> effect 1 +
+  vizStyle 0. +3 protocol checks (effect 3 adopted verbatim,
+  no echo) and +16 visualizer checks (cap, fade-out,
+  spring-not-copy, swell, silence) in the core suite.
+- TickerBar.iss fallback define 0.5.7 -> 0.5.8 (version_guard
+  keeps it in sync with the single source).
+- Suite: 547 checks, 0 failures (was 528). ctest 2/2
+  (core + version_guard) green. Full app compile+link on this
+  VM at 0.5.8: exit 0.
+- Environment note: the first build attempt failed at
+  configure — the VM had lost its X11 dev headers since the
+  last full build (juceaide: X11/extensions/Xrandr.h, then
+  Xinerama.h missing). Fixed by apt-get install libxrandr-dev
+  + the X11 dev bundle; no repo files involved.
+- Field check owed: the look itself (melt strength, white
+  energy, ribbon feel) can only be judged on Jackson's PC.
+
 ## v0.5.7 (2026-10-31) — Arrange takes maximized windows
 
 Jackson (2026-10-31 15:00 PT): "the arrange does not work when

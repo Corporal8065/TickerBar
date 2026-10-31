@@ -37,7 +37,7 @@
 
 class BarLinkClient : private juce::Timer {
 public:
-    struct Bg { int style = 0; float opacity = 1.0f; int effect = 0; }; // effect: BLK3 (v0.5.6)
+    struct Bg { int style = 0; float opacity = 1.0f; int effect = 0; }; // effect: BLK3 (v0.5.6); BLK4 (v0.5.8) adds effect 3 = visualizer Lines
     // Host callbacks (all message-thread).
     std::function<juce::Rectangle<int>()> getBounds;
     std::function<void(juce::Rectangle<int>)> setBounds;   // position apply (size preserved by the rect itself)

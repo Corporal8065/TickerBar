@@ -46,6 +46,7 @@ inline juce::var toVar(const tickerbar::TickerState& s) {
     set("clickSounds", s.clickSounds);
     set("dataColorScheme", s.dataColorScheme);
     set("bgEffect", s.bgEffect);
+    set("vizStyle", s.vizStyle); // v0.5.8: 0 Bubbles / 1 Lines
     set("vizHue", s.vizHue); set("vizSat", s.vizSat); set("vizSpread", s.vizSpread); set("vizCycle", s.vizCycle);
     auto* widthsObj = new juce::DynamicObject();
     for (auto& kv : s.cellWidths) widthsObj->setProperty(juce::String(kv.first), kv.second);
@@ -104,6 +105,7 @@ inline tickerbar::TickerState fromVar(const juce::var& v) {
     s.clickSounds = gb("clickSounds", s.clickSounds);
     s.dataColorScheme = juce::jlimit(0, 4, gi("dataColorScheme", s.dataColorScheme));
     s.bgEffect = juce::jlimit(0, 2, gi("bgEffect", s.bgEffect));
+    s.vizStyle = juce::jlimit(0, 1, gi("vizStyle", s.vizStyle)); // v0.5.8 (absent -> Bubbles)
     s.vizHue = gf("vizHue", s.vizHue); s.vizSat = gf("vizSat", s.vizSat);
     s.vizSpread = gf("vizSpread", s.vizSpread); s.vizCycle = gf("vizCycle", s.vizCycle);
     if (auto* wObj = g("cellWidths").getDynamicObject()) {
