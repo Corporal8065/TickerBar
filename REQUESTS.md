@@ -4,6 +4,45 @@ Verification rule (Jackson, 2026-10-29): every item is DONE only with
 proof — the full core suite green after the change, new checks for new
 behaviour, and errors recorded here with their actual text, never hidden.
 
+## v0.5.0 (2026-10-31) — one linked background across the bars (Jackson's ask)
+
+Jackson's words (dictated, 2026-10-31): "the addition to MeterBar
+where we change the background graphics needs to be applied to
+not only MeterBar but when you connect the other 2 softwares to
+all link and instead use the combination of the 3 resolutions as
+the sizing for it, and then when sound is played with specific
+frequencies and or transients that we have set up will do its
+thing."
+
+- **Group field map — DONE in code, core-proven.** New pure core
+  in `BarLink.hpp` (identical in all three repos): `fieldMap` /
+  `fieldToLocal` / `fieldDotVisible`. When the bars are linked,
+  the visualizer's unit field spans the GROUP rect — the union of
+  the linked bars' screen rects, i.e. the combination of their
+  resolutions — and each bar renders only its own slice of it.
+  Burst anchors and the ambient convergence centre sit at the
+  centre of the COMBINED strip, so the audio reaction plays
+  across the whole linked strip instead of restarting per bar.
+  17 new checks pin the seam arithmetic (the field centre maps
+  to the left bar's right cache edge AND the right bar's left
+  cache edge — one screen point), the three-bar middle third,
+  vertical stacks, degenerate-rect fallback and dot culling.
+  Suite 477 → 494 checks, 0 failures.
+- **Render — DONE in code.** `drawVisualizerBackground` maps each
+  particle through the field map. Unlinked (or linked but alone)
+  the map is the bar-local identity and the v0.4.0 render runs
+  unchanged. Dot radius is deliberately NOT remapped — a dot
+  keeps its physical size; only positions come from the group.
+  The edited translation unit passes a full g++ syntax/type
+  check against the JUCE 8.0.4 headers (0 errors). The Windows
+  CI build after push, and Jackson's eyes on the linked strip,
+  are the remaining proof — nothing visual was verified here.
+- **Siblings.** MeterBar v0.21.0 renders the same field from its
+  own audio (it is the BarLink broadcast source) and SessionBar
+  v0.4.0 renders it from the broadcast; SessionBar also received
+  the feel-pass render treatment it missed in the v0.4.0 round
+  (its own REQUESTS record).
+
 ## v0.4.0 (2026-10-31) — Jackson's feel pass (his direct ask, web chat)
 
 His words, lightly trimmed: "(1) resizable however you want,

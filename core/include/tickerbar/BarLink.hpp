@@ -236,4 +236,60 @@ inline bool audioPacket(const LinkSlot& s, long long nowMs, float out[4]) {
     return true;
 }
 
+// ------------------------------------------------------------------
+// GROUP FIELD MAP (TickerBar v0.5.0 / MeterBar v0.21.0 / SessionBar
+// v0.4.0) — Jackson's linked-background ask: when the bars are
+// LINKED, the visualizer background is ONE field sized by the
+// COMBINATION of the linked bars' screen rects (the group rect the
+// client computes), not by each bar alone. The particle model
+// stays in unit space; this pure map converts a unit field point
+// into the bar's own render-cache pixels — the field spans the
+// group and each bar draws only the slice of it that falls inside
+// its own window, the same group-space trick the reactive glow
+// has used since item 17, now applied to the particle layer.
+// A burst anchored at field x = 0.5 sits at the centre of the
+// COMBINED strip, and the ambient convergers stream toward that
+// same centre across the seams. Dot RADIUS is deliberately not
+// remapped: a dot keeps the physical size it has unlinked (cache
+// pixels) — only its position comes from the group.
+//
+// When the group rect equals the bar's own rect (unlinked, linked
+// but alone, or a degenerate rect) the map is the historical
+// bar-local one — kx = iw, ky = ih, offsets 0, grouped = false —
+// so the unlinked render is exactly the pre-link behaviour.
+struct FieldMap {
+    float kx = 0, ky = 0;   // cache px per unit of field span
+    float ox = 0, oy = 0;   // cache px offset of the field origin
+    bool grouped = false;   // true when the field spans beyond this bar
+};
+inline FieldMap fieldMap(IntRect own, IntRect group, int iw, int ih) {
+    FieldMap m;
+    m.kx = (float)iw; m.ky = (float)ih;
+    if (own.w <= 0 || own.h <= 0 || group.w <= 0 || group.h <= 0 || iw <= 0 || ih <= 0)
+        return m;
+    if (group.x == own.x && group.y == own.y && group.w == own.w && group.h == own.h)
+        return m;
+    const float sx = (float)iw / (float)own.w;   // cache px per screen px, this bar
+    const float sy = (float)ih / (float)own.h;
+    m.kx = (float)group.w * sx;
+    m.ky = (float)group.h * sy;
+    m.ox = -(float)(own.x - group.x) * sx;
+    m.oy = -(float)(own.y - group.y) * sy;
+    m.grouped = true;
+    return m;
+}
+// One field point -> this bar's cache pixels under a FieldMap.
+inline void fieldToLocal(const FieldMap& m, float fx, float fy, float& lx, float& ly) {
+    lx = fx * m.kx + m.ox;
+    ly = fy * m.ky + m.oy;
+}
+// True when a dot of radius r (cache px) centred at (lx, ly) can
+// touch the cache at all — the render skips off-slice dots instead
+// of asking the rasteriser to clip them one by one. A dot that is
+// even partly inside still draws, exactly as the bar-local render
+// treated its own edges.
+inline bool fieldDotVisible(float lx, float ly, float r, int iw, int ih) {
+    return lx + r >= 0.f && ly + r >= 0.f && lx - r <= (float)iw && ly - r <= (float)ih;
+}
+
 } // namespace tickerbar

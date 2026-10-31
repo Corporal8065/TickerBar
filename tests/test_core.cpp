@@ -768,6 +768,52 @@ int main() {
         bgForceRepublish(bs);
         CHECK(bgIsLocalChange(bs, 2, 80)); // re-stamp forced
     }
+    // ---------- group field map: one visualizer field across the linked bars ----------
+    {
+        // Unlinked / alone: group == own -> the historical bar-local map.
+        IntRect own{ 100, 200, 800, 40 };
+        auto m0 = fieldMap(own, own, 400, 20);
+        CHECK(!m0.grouped);
+        float lx = -1, ly = -1;
+        fieldToLocal(m0, 0.5f, 0.5f, lx, ly);
+        CHECK(lx == 200.f && ly == 10.f);
+        fieldToLocal(m0, 0.f, 0.f, lx, ly);
+        CHECK(lx == 0.f && ly == 0.f);
+        // Degenerate rects fall back to the local map, never a wild scale.
+        auto mD = fieldMap(own, IntRect{}, 400, 20);
+        CHECK(!mD.grouped && mD.kx == 400.f && mD.ky == 20.f);
+        // Two bars side by side: the field centre is the seam — it maps
+        // to the left bar's right cache edge and the right bar's left
+        // cache edge (the same screen point from both sides).
+        IntRect grp{ 0, 0, 1600, 40 };
+        IntRect left{ 0, 0, 800, 40 }, right{ 800, 0, 800, 40 };
+        auto mL = fieldMap(left, grp, 400, 20);
+        auto mR = fieldMap(right, grp, 400, 20);
+        CHECK(mL.grouped && mR.grouped);
+        fieldToLocal(mL, 0.5f, 0.5f, lx, ly); CHECK(lx == 400.f);
+        fieldToLocal(mR, 0.5f, 0.5f, lx, ly); CHECK(lx == 0.f);
+        fieldToLocal(mL, 0.25f, 0.5f, lx, ly); CHECK(lx == 200.f); // quarter point: centre of the left bar
+        fieldToLocal(mR, 0.75f, 0.5f, lx, ly); CHECK(lx == 200.f); // three-quarter: centre of the right bar
+        // Three bars: the middle bar's cache spans the middle third.
+        IntRect grp3{ 0, 0, 2400, 40 };
+        IntRect mid3{ 800, 0, 800, 40 };
+        auto mM = fieldMap(mid3, grp3, 400, 20);
+        fieldToLocal(mM, 0.5f, 0.5f, lx, ly); CHECK(lx == 200.f);
+        fieldToLocal(mM, 1.f / 3.f, 0.5f, lx, ly); CHECK(lx > -0.01f && lx < 0.01f);
+        // Vertical stack: the same on the y axis.
+        IntRect vgrp{ 0, 0, 800, 80 };
+        IntRect top{ 0, 0, 800, 40 }, bot{ 0, 40, 800, 40 };
+        auto mT = fieldMap(top, vgrp, 400, 20);
+        auto mB = fieldMap(bot, vgrp, 400, 20);
+        fieldToLocal(mT, 0.5f, 0.5f, lx, ly); CHECK(ly == 20.f);
+        fieldToLocal(mB, 0.5f, 0.5f, lx, ly); CHECK(ly == 0.f);
+        // Visibility culling: a dot deep in the left slice is invisible
+        // to the right bar; a dot straddling an edge still draws.
+        CHECK(fieldDotVisible(200.f, 10.f, 3.f, 400, 20));
+        CHECK(!fieldDotVisible(-60.f, 10.f, 3.f, 400, 20));
+        CHECK(!fieldDotVisible(460.f, 10.f, 3.f, 400, 20));
+        CHECK(fieldDotVisible(-2.f, 10.f, 3.f, 400, 20));
+    }
     // ---------- v0.3.0: cell width solver + reorder math ----------
     {
         auto w = solveCellWidths(1000, 8, {300, 0, 0}, 100);

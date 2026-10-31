@@ -2004,14 +2004,27 @@ void MainComponent::drawVisualizerBackground(juce::Graphics& g) {
         vizBlur_ = juce::Image(juce::Image::RGB, iw, ih, true);
     }
     auto vs = vizSettings();
+    // v0.5.0: LINKED, the particle field spans the GROUP — the
+    // union of the linked bars' screen rects — and this bar draws
+    // only its slice of it (core fieldMap; the glow below has
+    // sampled in group space since item 17). Unlinked or alone the
+    // map is the bar-local one and the render is v0.4.0's, unchanged.
+    auto group = linkClient_.groupRect();
+    auto own = getScreenBounds();
+    if (group.isEmpty() || own.isEmpty()) group = own;
+    const auto fm = tickerbar::fieldMap(
+        tickerbar::IntRect{ own.getX(), own.getY(), own.getWidth(), own.getHeight() },
+        tickerbar::IntRect{ group.getX(), group.getY(), group.getWidth(), group.getHeight() }, iw, ih);
     {
         juce::Graphics ig(vizCache_);
         ig.fillAll(juce::Colours::black);
         for (auto& pt : viz_.particles()) {
             auto c = viz_.colorFor(pt, vs);
             ig.setColour(juce::Colour(c.r, c.g, c.b));
-            const float px = pt.x * (float)iw, py = pt.y * (float)ih;
+            float px, py;
+            tickerbar::fieldToLocal(fm, pt.x, pt.y, px, py);
             const float r = pt.size * 1.35f; // v0.4.0: plumper dots — softer, rounder blobs after the blur
+            if (!tickerbar::fieldDotVisible(px, py, r, iw, ih)) continue; // another bar's slice of the field
             ig.fillEllipse(px - r, py - r, r * 2.f, r * 2.f);
         }
     }

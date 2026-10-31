@@ -2,6 +2,30 @@
 
 # TickerBar — BUILD LOG
 
+## v0.5.0 (2026-10-31) — one linked background: the visualizer field spans the linked bars
+
+Jackson's ask (dictated, same day): the background-graphics
+change "needs to be applied to not only MeterBar but when you
+connect the other 2 softwares to all link and instead use the
+combination of the 3 resolutions as the sizing for it, and then
+when sound is played with specific frequencies and or transients
+that we have set up will do its thing." Per-item record in
+REQUESTS.md. Landed identically in all three repos (MeterBar
+v0.21.0, SessionBar v0.4.0).
+
+- **Core:** `fieldMap` / `fieldToLocal` / `fieldDotVisible` in
+  BarLink.hpp — the visualizer's unit field maps onto the group
+  rect (union of the linked bars' screen rects); each bar draws
+  its own slice. Unlinked the map is the identity. Suite
+  477 → 494 checks, 0 failures.
+- **App:** drawVisualizerBackground renders particles through
+  the map. Full g++ syntax/type check of the edited TU against
+  JUCE 8.0.4 headers: 0 errors. No complete Windows build or
+  visual verification runs on this VM — CI after push plus
+  Jackson's eyes on the linked strip are the proof, as before.
+- Committed locally only; the push + release are the usual
+  separate step.
+
 ## v0.4.0 (2026-10-31) — Jackson's feel pass: free resize, overflow marquee, softer+darker visualizer, transparent cells
 
 Jackson's direct ask (2026-10-31), all seven items; per-item
