@@ -4,6 +4,88 @@ Verification rule (Jackson, 2026-10-29): every item is DONE only with
 proof — the full core suite green after the change, new checks for new
 behaviour, and errors recorded here with their actual text, never hidden.
 
+## v0.5.3 (2026-10-31) — app reports its real version: stale 0.4.0 literals killed (Fiona's report, primary root cause)
+
+Fiona's report (2026-10-31): after updating TickerBar — in-app,
+and even after a manual install of the 0.5.0 Setup.exe — the app
+still reported 0.4.0 and kept offering the 0.5.0 update. The
+v0.5.1 fix (below) addressed a real defect, but not this symptom's
+primary cause: her manual install had actually worked — the app
+was misreporting its own version.
+
+- **Single-source version — DONE.** The current-version strings
+  were hard-coded literals last bumped at v0.4.0: Main.cpp's
+  getApplicationVersion() returned "0.4.0", and MainComponent.cpp's
+  kVersionNum ("0.4.0") was passed to the updater as the current
+  version while kVersion ("v0.4.0") fed the Settings label and the
+  updater dialogs. Ported MeterBar's v0.19 pattern: root project()
+  VERSION is the single source of truth; configure_file generates
+  TickerBarVersion.h (app/TickerBarVersion.h.in) with
+  tickerbar::kVersionString, which getApplicationVersion(),
+  kVersion, and the updater call now all read. app/CMakeLists.txt
+  takes its gui-app VERSION and JUCE_APPLICATION_VERSION_STRING
+  from ${PROJECT_VERSION}. Grep proof: no semver string literal
+  remains in Main.cpp / MainComponent.cpp; the only one left in
+  app/Source is a format example in an Updater.h comment.
+- **Guards — DONE.** 3 new compiled checks in test_core assert
+  the generated header equals the project version (string and
+  major/minor/patch), and a new ctest entry, version_guard
+  (tests/version_guard.cmake), fails on any bare semver literal
+  assigned/returned in the two TUs or any carrier drift (gui-app
+  VERSION, JUCE string, .iss fallback, generated header).
+  Negative-tested: bites on a reintroduced literal and on a
+  drifted .iss; passes clean.
+- **Version 0.5.2 → 0.5.3** — root CMakeLists.txt project
+  VERSION + TickerBar.iss fallback define; the rest follows.
+- **Proof:** core suite 506 → 509 checks, 0 failures; ctest 2/2
+  (core + version_guard). Full app build on this VM (JUCE 8.0.4):
+  the TickerBar target compiled and linked. Windows CI compiles
+  the real installer on the v0.5.3 tag, as usual.
+
+## v0.5.2 (2026-10-31) — link applies get a visibility floor (Jackson's "stuck somewhere i cannot see" report)
+
+Jackson's report (2026-10-31, #crypto-book, about SessionBar —
+same defect here by construction): "Session bar is also for me
+still stuck somewhere i cannot see upon load up and have no idea
+how to fix plz help".
+
+Root cause: the v0.3.0 clamp guards the two places a SAVED rect is
+applied — the startup restore and preset apply
+(`applyWindowRectFromState`). It never covered the family LINK:
+with Link on, stack plans, drag follows, snap settles and group
+docks move the bar AFTER startup through the link client's
+setBounds callback, unguarded. A stale stack request in the shared
+block, or a peer docked against space no monitor owns any more,
+could move the just-restored bar off-screen within a tick of
+launch — and the position-save feed then saved the off-screen
+rect, so every later launch restored (clamped) and re-lost it the
+same way.
+
+- **Visibility floor in core WindowGeom — DONE.** New pure rule,
+  identical in all three repos: `rectMeaningfullyVisible` (at
+  least 100x40 px of the rect inside ONE display work area — the
+  rect itself when it is smaller than that) and
+  `ensureRectVisible`. A meaningfully-visible rect — a bar on a
+  second monitor, a straddle — is returned untouched; below the
+  floor the rect keeps its size and lands on the primary work
+  area, centred horizontally, near the top. 12 new checks: fully
+  off-screen rescued, second display untouched, above-floor
+  partial untouched, sliver and sunk rects rescued, straddle
+  untouched, no-areas no-op. Suite 494 → 506 checks, 0 failures.
+- **Link setBounds funnel guarded — DONE.** This bar's
+  `linkClient_.setBounds` callback — the single funnel every
+  remote apply passes through — now runs its target through
+  `ensureRectVisible` with the live displays' user areas before
+  touching the window. The fix landed first in SessionBar v0.4.2
+  (the reported bar) and is ported identically here and in
+  MeterBar v0.21.1.
+- **Version 0.5.1 → 0.5.2** in the single-source places: root
+  CMakeLists.txt, app/CMakeLists.txt (incl.
+  JUCE_APPLICATION_VERSION_STRING), TickerBar.iss fallback.
+  Proof: full core suite green at 506 checks, 0 failures; the
+  edited app TU passes a full g++ type-check vs JUCE 8.0.4.
+  Windows CI + Jackson's eyes remain the visual proof.
+
 ## v0.5.1 (2026-10-31) — installer relaunches after silent in-app updates (Fiona's report)
 
 Fiona's report (2026-10-31): after updating TickerBar — in-app, and
@@ -26,6 +108,12 @@ reported 0.4.0 and kept offering the 0.5.0 update.
   installer-only, no core behaviour touched). The .iss was re-read
   after editing: all sections intact, the gated entry inside [Run].
   Windows CI compiles the real installer on the tag, as usual.
+- **Correction (2026-10-31, v0.5.3):** this entry's fix is real
+  but SECONDARY for Fiona's symptom. A missing relaunch entry
+  cannot explain the app still reporting 0.4.0 after a manual
+  install — that was the stale hard-coded version literals in
+  Main.cpp / MainComponent.cpp (frozen at 0.4.0), the primary root
+  cause, fixed in v0.5.3 above.
 
 ## v0.5.0 (2026-10-31) — one linked background across the bars (Jackson's ask)
 

@@ -2,6 +2,80 @@
 
 # TickerBar — BUILD LOG
 
+## v0.5.3 (2026-10-31) — the app reports its real version (Fiona's stuck-on-0.4.0: the primary root cause)
+
+Fiona's report (2026-10-31): after updating TickerBar — in-app,
+and even after a manual install of the 0.5.0 Setup.exe — the app
+still reported 0.4.0 and kept offering the 0.5.0 update. The
+v0.5.1 entry below blamed the installer's missing silent-relaunch
+entry. That defect is real, but it was NOT the primary cause of
+her symptom: a manual install replaces the files regardless of
+any relaunch entry, and the app STILL said 0.4.0 afterwards.
+
+- Primary root cause: the app's current-version strings were
+  hard-coded literals that were never bumped after v0.4.0 —
+  `getApplicationVersion()` in Main.cpp returned "0.4.0", and
+  MainComponent.cpp carried `kVersion = "v0.4.0"` (the Settings
+  sheet label and every updater dialog) plus `kVersionNum =
+  "0.4.0"`, which was passed to the updater as the current
+  version. Every build since 0.4.0 therefore believed it WAS
+  0.4.0 and offered the newest release forever. Fiona's manual
+  install of 0.5.0 had actually worked; the app was misreporting
+  its own version.
+- Fix (MeterBar's v0.19 pattern, ported): the root project()
+  VERSION is now the single source of truth. configure_file
+  generates TickerBarVersion.h from app/TickerBarVersion.h.in
+  (`tickerbar::kVersionString`); Main.cpp's
+  getApplicationVersion() and MainComponent.cpp's kVersion /
+  updater call all read it; app/CMakeLists.txt takes its gui-app
+  VERSION and JUCE_APPLICATION_VERSION_STRING from
+  ${PROJECT_VERSION}. No version literal remains in either TU
+  (grep-verified); the only semver literal left in app/Source is
+  a format example in an Updater.h comment.
+- Guards against this class: 3 new compiled checks in test_core
+  (the generated header's string and major/minor/patch must equal
+  the project version) plus a new ctest entry, version_guard
+  (tests/version_guard.cmake), which fails if a bare semver
+  literal is assigned/returned in Main.cpp / MainComponent.cpp or
+  if any carrier — gui-app VERSION, JUCE_APPLICATION_VERSION_STRING,
+  the .iss fallback, the generated header — drifts from the root
+  project VERSION. The guard was negative-tested: it bites on a
+  reintroduced literal and on a drifted .iss, and passes clean.
+- Version 0.5.2 → 0.5.3 (root CMakeLists.txt project VERSION —
+  now the only place a bump is needed besides the .iss fallback;
+  app/CMakeLists.txt and the generated header follow it).
+- Verification: core suite 506 → 509 checks, 0 failures; ctest
+  2/2 (core + version_guard). Full app build on this VM (JUCE
+  8.0.4, Linux): the TickerBar target compiled and LINKED —
+  stronger than the usual TU type-check, and it exercises the
+  generated-header wiring end to end. The Windows installer
+  compile remains CI's job on the v0.5.3 tag.
+
+## v0.5.2 (2026-10-31) — visibility floor on link applies (off-screen on load)
+
+Jackson's report (2026-10-31, #crypto-book, about SessionBar —
+same defect here): the bar loads "somewhere i cannot see". The
+v0.3.0 startup clamp was doing its job — and the LINK was undoing
+it a tick later. The clamp covers the startup restore and preset
+apply; stack plans, drag follows, snap settles and group docks
+land through the link client's setBounds callback with no guard
+at all, and the position-save feed then persisted wherever the
+link had put the bar.
+
+- Core: `rectMeaningfullyVisible` / `ensureRectVisible` added to
+  WindowGeom.hpp (identical in all three repos, namespace aside):
+  at least 100x40 px inside one work area = visible, returned
+  untouched; below that, same size onto the primary work area,
+  centred horizontally, near the top.
+- App: the link client's setBounds callback now routes every
+  remote apply through the floor with the live displays' user
+  areas before touching the window.
+- Tests: 12 new checks — off-screen rescued, second display and
+  straddle untouched, above-floor partial untouched, sliver and
+  sunk rects rescued. Suite 494 → 506 checks, 0 failures.
+- Version 0.5.1 → 0.5.2 (root CMakeLists.txt, app/CMakeLists.txt
+  incl. JUCE_APPLICATION_VERSION_STRING, TickerBar.iss fallback).
+
 ## v0.5.1 (2026-10-31) — silent-update relaunch: MeterBar's WizardSilent entry ported
 
 Fiona's field report (2026-10-31): TickerBar updated to 0.5.0 — and
@@ -24,6 +98,16 @@ even a manual install of the 0.5.0 Setup.exe — left the app reporting
   .iss sections verified intact post-edit, gated entry inside [Run].
   The installer compile itself is CI's job on the v0.5.1 tag (this
   VM has no ISCC).
+- Correction (appended 2026-10-31, v0.5.3): the "Root cause"
+  bullet above overstates this entry's defect. The missing
+  relaunch entry explains an in-app update leaving the app
+  closed; it does NOT explain Fiona's headline symptom — the app
+  still reporting 0.4.0 after a MANUAL install, which replaces
+  the files no matter what the [Run] section says. That symptom's
+  primary cause was the stale hard-coded version literals
+  (Main.cpp / MainComponent.cpp, frozen at 0.4.0), fixed in
+  v0.5.3. This entry's fix stands as a real, secondary defect:
+  without it, a silent in-app update still never relaunches.
 
 ## v0.5.0 (2026-10-31) — one linked background: the visualizer field spans the linked bars
 

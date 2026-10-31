@@ -27,6 +27,7 @@
 #include <tickerbar/Visualizer.hpp>
 #include <tickerbar/Glow.hpp>
 #include <tickerbar/Mascot.hpp>
+#include "TickerBarVersion.h" // v0.5.3: generated from the root project() VERSION
 #ifndef FIXTURES_DIR
 #define FIXTURES_DIR "tests/fixtures"
 #endif
@@ -597,6 +598,37 @@ int main() {
         CHECK(c4.x + c4.w <= 3840 && c4.y + c4.h <= 1040);
         CHECK(clampRectToWorkAreas(inside, {}) == inside); // no areas = no opinion
     }
+    // ---------- v0.5.2: WindowGeom visibility floor (link applies) ----------
+    {
+        std::vector<IntRect> areas{ IntRect{0, 0, 1920, 1040} };
+        std::vector<IntRect> two{ IntRect{0, 0, 1920, 1040}, IntRect{1920, 0, 1920, 1040} };
+        // fully off-screen: the floor fires — size kept, primary area,
+        // centred horizontally, near the top
+        IntRect lost{ 5000, 3000, 900, 96 };
+        CHECK(!rectMeaningfullyVisible(lost, areas));
+        auto f = ensureRectVisible(lost, areas);
+        CHECK(f.x == (1920 - 900) / 2 && f.y == 24 && f.w == 900 && f.h == 96);
+        CHECK(rectMeaningfullyVisible(f, areas));
+        // genuinely on the second display: untouched
+        IntRect onSecond{ 2000, 50, 900, 96 };
+        CHECK(rectMeaningfullyVisible(onSecond, two));
+        CHECK(ensureRectVisible(onSecond, two) == onSecond);
+        // partially visible ABOVE the floor (120x96 showing): untouched
+        IntRect partial{ 1800, 100, 900, 96 };
+        CHECK(rectMeaningfullyVisible(partial, areas));
+        CHECK(ensureRectVisible(partial, areas) == partial);
+        // a 20 px sliver is below the floor: rescued to the primary
+        IntRect sliver{ 1900, 100, 900, 96 };
+        CHECK(!rectMeaningfullyVisible(sliver, areas));
+        CHECK(ensureRectVisible(sliver, areas).x == (1920 - 900) / 2);
+        // sunk so only 10 px of height shows: below the floor too
+        CHECK(!rectMeaningfullyVisible(IntRect{ 100, 1030, 900, 96 }, areas));
+        // straddling two monitors with a real chunk on each: untouched
+        IntRect straddle{ 1700, 100, 900, 96 };
+        CHECK(ensureRectVisible(straddle, two) == straddle);
+        // no areas = no opinion
+        CHECK(ensureRectVisible(lost, {}) == lost);
+    }
     // ---------- v0.3.0: ChartMath volume MA/SD ----------
     {
         std::vector<double> flat(60, 100.0);
@@ -920,6 +952,22 @@ int main() {
         TickerState d2;
         resetLayoutToDefaults(d2);
         CHECK(d2.watchlist == TickerState{}.watchlist && d2.cellWidths.empty());
+    }
+
+    // ---------- v0.5.3: single-source version (generated header) ----------
+    {
+        // tickerbar::kVersionString is the exact string the updater
+        // compares against and getApplicationVersion() reports; it is
+        // generated from the root project() VERSION. If it ever
+        // disagrees with the project version, the build is lying
+        // about its own version (the stuck-on-0.4.0 bug: hard-coded
+        // literals in Main.cpp / MainComponent.cpp, never bumped).
+        CHECK(std::string(tickerbar::kVersionString) == EXPECTED_PROJECT_VERSION);
+        CHECK(std::string(TICKERBAR_VERSION_STRING) == EXPECTED_PROJECT_VERSION);
+        const std::string composed = std::to_string(TICKERBAR_VERSION_MAJOR) + "."
+                                   + std::to_string(TICKERBAR_VERSION_MINOR) + "."
+                                   + std::to_string(TICKERBAR_VERSION_PATCH);
+        CHECK(composed == std::string(tickerbar::kVersionString));
     }
 
     std::printf("\n%d checks, %d failures\n", checks, failures);

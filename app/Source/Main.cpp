@@ -1,6 +1,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
+#include "TickerBarVersion.h" // v0.5.3: generated — single-source version (root CMakeLists project VERSION)
 #include <tickerbar/WindowGeom.hpp> // v0.3.0: startup position clamp (never restore off-screen)
 #if JUCE_WINDOWS
 #ifndef WIN32_LEAN_AND_MEAN
@@ -88,7 +89,7 @@ private:
 class TickerBarApp : public juce::JUCEApplication {
 public:
     const juce::String getApplicationName() override { return "TickerBar"; }
-    const juce::String getApplicationVersion() override { return "0.4.0"; }
+    const juce::String getApplicationVersion() override { return tickerbar::kVersionString; }
     bool moreThanOneInstanceAllowed() override { return false; }
     void initialise(const juce::String&) override {
         // JUCE free-license attribution splash (MeterBar v0.15 pattern):

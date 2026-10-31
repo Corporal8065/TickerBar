@@ -9,6 +9,7 @@
 #include <tickerbar/Visualizer.hpp>
 #include <tickerbar/Glow.hpp>
 #include <tickerbar/Mascot.hpp>
+#include "TickerBarVersion.h" // v0.5.3: generated — single-source version
 #include <map>
 #include <memory>
 #include <vector>

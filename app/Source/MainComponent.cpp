@@ -11,8 +11,17 @@
 #if JUCE_WINDOWS
  #include <windows.h> // native rects for the AppBar sync (physical pixels)
 #endif
-static const char* kVersion = "v0.4.0";
-static const char* kVersionNum = "0.4.0";
+// v0.5.3: the version string comes from the GENERATED header — root
+// CMakeLists project(VERSION) is the single source of truth (the
+// MeterBar v0.19 pattern, via MainComponent.h's TickerBarVersion.h
+// include). Before this, the literals here (kVersion / kVersionNum)
+// and getApplicationVersion() in Main.cpp were hard-coded and last
+// bumped at v0.4.0: every later build reported 0.4.0 to the updater
+// and in the Settings sheet, so the updater offered the newest
+// release forever — Fiona's stuck-on-0.4.0 report. Her manual
+// install of the 0.5.0 Setup.exe had actually worked; the app was
+// misreporting its own version.
+static const juce::String kVersion = juce::String("v") + tickerbar::kVersionString;
 static juce::String dockEdgeName(tickerbar::DockEdge e) {
     switch (e) {
         case tickerbar::DockEdge::Top: return "Top";
@@ -798,7 +807,25 @@ MainComponent::MainComponent() {
     // ordinal + opacity; the dock ordinal is the reserve machine's.
     linkClient_.getBounds = [this]{ return currentWindowBounds(); };
     linkClient_.setBounds = [this](juce::Rectangle<int> r){
-        if (auto* w = findParentComponentOfClass<juce::DocumentWindow>()) w->setBounds(r);
+        if (auto* w = findParentComponentOfClass<juce::DocumentWindow>()) {
+            // v0.5.2: EVERY remote apply (stack / follow / snap /
+            // group-dock) passes the visibility floor (core
+            // WindowGeom, ensureRectVisible). Before this, the link
+            // could move the bar off-screen a tick after the
+            // (clamped) startup restore, and the position-save feed
+            // kept it there — the defect behind Jackson's
+            // 2026-10-31 "stuck somewhere i cannot see upon load
+            // up" report on SessionBar, shared here by construction.
+            // Meaningfully-visible targets pass through untouched.
+            std::vector<tickerbar::IntRect> areas;
+            for (auto& d : juce::Desktop::getInstance().getDisplays().displays) {
+                auto ua = d.userArea;
+                areas.push_back({ ua.getX(), ua.getY(), ua.getWidth(), ua.getHeight() });
+            }
+            auto safe = tickerbar::ensureRectVisible(
+                { r.getX(), r.getY(), r.getWidth(), r.getHeight() }, areas);
+            w->setBounds(safe.x, safe.y, safe.w, safe.h);
+        }
     };
     linkClient_.getBg = [this]{ return BarLinkClient::Bg{ (int)state.backgroundStyle, state.backgroundOpacity }; };
     linkClient_.applyBg = [this](const BarLinkClient::Bg& bg){
@@ -1785,7 +1812,7 @@ void MainComponent::startUpdateCheck(bool fromLaunch) {
     updateState_ = std::make_shared<tbupdate::SharedState>();
     updateCheckPending_ = true;
     updateCheckFromLaunch_ = fromLaunch;
-    tbupdate::checkLatestAsync(updateState_, juce::String(kVersionNum));
+    tbupdate::checkLatestAsync(updateState_, tickerbar::kVersionString);
 }
 void MainComponent::checkForUpdates() {
     if (!tbupdate::configured()) {
