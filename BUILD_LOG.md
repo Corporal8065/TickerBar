@@ -2,6 +2,29 @@
 
 # TickerBar — BUILD LOG
 
+## v0.5.1 (2026-10-31) — silent-update relaunch: MeterBar's WizardSilent entry ported
+
+Fiona's field report (2026-10-31): TickerBar updated to 0.5.0 — and
+even a manual install of the 0.5.0 Setup.exe — left the app reporting
+0.4.0 and still offering the 0.5.0 update.
+
+- Root cause: TickerBar.iss had only the interactive
+  `nowait postinstall skipifsilent` [Run] launch entry. The in-app
+  updater runs the installer with /SILENT /CLOSEAPPLICATIONS
+  /RESTARTAPPLICATIONS /NORESTART and then quits the app; the
+  skipifsilent entry never fires on a silent install, so the new
+  version never relaunches.
+- Fix: the gated silent-relaunch entry MeterBar shipped with its
+  v0.19 updater work, ported with its comment adapted to this repo:
+  `Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: WizardSilent`
+  Interactive installs keep the existing postinstall offer.
+- Version 0.5.0 → 0.5.1 (root CMakeLists.txt, app/CMakeLists.txt
+  incl. JUCE_APPLICATION_VERSION_STRING, TickerBar.iss fallback).
+- Verification: core suite rebuilt and run — 494 checks, 0 failures.
+  .iss sections verified intact post-edit, gated entry inside [Run].
+  The installer compile itself is CI's job on the v0.5.1 tag (this
+  VM has no ISCC).
+
 ## v0.5.0 (2026-10-31) — one linked background: the visualizer field spans the linked bars
 
 Jackson's ask (dictated, same day): the background-graphics

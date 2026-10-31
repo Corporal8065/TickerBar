@@ -4,6 +4,29 @@ Verification rule (Jackson, 2026-10-29): every item is DONE only with
 proof — the full core suite green after the change, new checks for new
 behaviour, and errors recorded here with their actual text, never hidden.
 
+## v0.5.1 (2026-10-31) — installer relaunches after silent in-app updates (Fiona's report)
+
+Fiona's report (2026-10-31): after updating TickerBar — in-app, and
+even after a manual install of the 0.5.0 Setup.exe — the app still
+reported 0.4.0 and kept offering the 0.5.0 update.
+
+- **Silent-relaunch [Run] entry — DONE.** TickerBar.iss carried only
+  the interactive `nowait postinstall skipifsilent` launch entry, so
+  a silent in-app update (installer run with /SILENT
+  /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /NORESTART, after which the
+  app quits) never relaunched the new version. Ported MeterBar's cure
+  verbatim — a second [Run] entry with NO skipifsilent, gated to
+  silent installs via `Check: WizardSilent` (it landed there with
+  MeterBar's v0.19 updater work).
+- **Version 0.5.0 → 0.5.1** in the single-source places: root
+  CMakeLists.txt, app/CMakeLists.txt (incl.
+  JUCE_APPLICATION_VERSION_STRING), TickerBar.iss fallback define.
+- **Proof:** full core suite green after the change — 494 checks,
+  0 failures (count unchanged from v0.5.0; the change is
+  installer-only, no core behaviour touched). The .iss was re-read
+  after editing: all sections intact, the gated entry inside [Run].
+  Windows CI compiles the real installer on the tag, as usual.
+
 ## v0.5.0 (2026-10-31) — one linked background across the bars (Jackson's ask)
 
 Jackson's words (dictated, 2026-10-31): "the addition to MeterBar
