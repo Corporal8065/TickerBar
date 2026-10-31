@@ -125,6 +125,22 @@ inline std::pair<int, int> adjustPairWidths(int w1, int w2, int delta, int minW)
 }
 
 // ------------------------------------------------------------------
+// SYMBOL CELL WIDTHS (v0.5.6) — the band the Settings > Sizes panel
+// writes into TickerState::cellWidths, the SAME store the on-bar
+// dividers drag. The floor is the fitted solver's own minW for the
+// horizontal bar (solveCellWidths is called with 90; the vertical
+// solver floors lower, at 56, and clamps up at layout time, so a
+// panel-written width is valid in both orientations). The ceiling
+// mirrors kContextCellMax below — the family's existing sane cap
+// for a dragged cell extent; the coin machinery itself has no max,
+// so the panel reuses that one rather than inventing a new number.
+inline constexpr int kSymbolCellMinW = 90;
+inline constexpr int kSymbolCellMaxW = 600; // == kContextCellMax
+inline int clampSymbolCellWidth(int w) {
+    return w < kSymbolCellMinW ? kSymbolCellMinW : (w > kSymbolCellMaxW ? kSymbolCellMaxW : w);
+}
+
+// ------------------------------------------------------------------
 // CONTEXT CELLS (Fear & Greed / BTC dominance) — post-v0.3.0,
 // Vishona's request. Until now they were fixed chrome: 112 px wide
 // (horizontal) / 66 px rows (vertical), always shown. Now each has
@@ -181,6 +197,18 @@ inline int marqueePosition(int base, int extent, int offset, int cycle) {
     if (rel < 0) rel += cycle;
     if (rel > cycle - extent) rel -= cycle; // half-out on the near side reads as a negative position
     return rel;
+}
+
+// MARQUEE DIVIDERS (v0.5.4) — where the divider between a strip item
+// and its successor sits while the marquee scrolls: centred in the
+// gap right after the item, tracking the item's CURRENT scrolled
+// position (marqueePosition's output, wrap and all), so the divider
+// a user grabs is always the one painted between the two cells it
+// resizes. With the shipped numbers (gap 16, divider extent 10)
+// this is itemRel + itemExtent + 3 — the fitted layout's own
+// placement (cell edge + 3 px of air, then the 10 px grip).
+inline int marqueeSplitterRel(int itemRel, int itemExtent, int gap, int splitterExtent) {
+    return itemRel + itemExtent + (gap - splitterExtent) / 2;
 }
 
 // Where a dragged cell would land: the count of sibling centres the

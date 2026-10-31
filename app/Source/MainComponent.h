@@ -75,11 +75,20 @@ public:
     void cellDragBegin(juce::Component* cell, const juce::MouseEvent& e);
     void cellDragMove(juce::Component* cell, const juce::MouseEvent& e);
     bool cellDragEnd(juce::Component* cell, const juce::MouseEvent& e); // true = the gesture was a reorder (suppress the click)
+    // Divider drags (v0.5.4): a press on any CellSplitter holds the
+    // overflow marquee still for the drag (the stepFx advance gate
+    // reads splitterDragHold_ alongside dragMode_).
+    void splitterDragBegin();
+    void splitterDragEnd();
     void openDetail(const juce::String& symbol);
     tickerbar::AlertLevels levelsFor(const std::string& symbol) const;
     void setAlerts(const std::string& symbol, double above, double below);
     void settingsChanged(bool watchlistToo); // apply + persist; watchlistToo also rebuilds cells and the client list
     void resetLayoutToDefaults();       // v0.3.2: Settings button — layout fields only (core resetLayoutToDefaults)
+    int  symbolCellWidth(const std::string& symbol) const; // v0.5.6: Sizes panel read — stored explicit width, 0 = auto
+    void setSymbolCellWidth(const std::string& symbol, int px); // v0.5.6: Sizes panel write — the SAME cellWidths store the dividers drag
+    void resetSymbolCellWidths();       // v0.5.6: Sizes panel reset — every symbol back to auto width
+    void onBgLinkToggled();             // v0.5.6: Settings "Link background" flipped — re-stamp for peers when it turns on
     void rebuildSettingsDeferred();
     void notifyWindowGeometryChanged(); // MainWindow moved/resized feed (reserve-machine events, v0.2.0)
     int minimumBarWidth() const;        // supported-width floor: every cell's % fully visible (Layout.hpp)
@@ -120,6 +129,11 @@ private:
     void startUpdateDownload();
     // presets (v0.3.0 item 2)
     void showPresetMenu();
+    // reposition dropdown (v0.5.5): MeterBar's showRepositionMenu
+    // ported — dock edges, pin, move-to-display, and (Jackson's
+    // ask) the Reserve toggle that used to be a standalone button.
+    void showRepositionMenu();
+    void doMoveToDisplay(int idx);
     void savePresetInteractive(bool saveAs);
     void loadPresetFile(const juce::File& f);
     void applyWindowRectFromState(); // preset/startup position apply, clamped on-screen (core WindowGeom)
@@ -166,8 +180,8 @@ private:
     std::unique_ptr<TickerSettingsWindow> settingsWin_;
 
     juce::Label wordmark_, versionLabel_, statusLabel_;
-    juce::TextButton reserveBtn_ { "Reserve" }, linkBtn_ { "Link" }, arrangeBtn_ { "Arrange" },
-                     restoreBtn_ { "Restore" }, presetBtn_ { "Preset" }, stackBtn_ { "Stack" },
+    juce::TextButton linkBtn_ { "Link" }, arrangeBtn_ { "Arrange" },
+                     restoreBtn_ { "Restore" }, presetBtn_ { "Preset" }, reposBtn_ { "Reposition" }, stackBtn_ { "Stack" },
                      dockBtn_ { "Top" }, settingsBtn_ { "Settings" }, updateBtn_ { "Update!" },
                      minBtn_ { "_" }, quitBtn_ { "Quit" };
     juce::ComponentDragger dragger_;
@@ -195,6 +209,7 @@ private:
     bool marqueeActive_ = false;
     int marqueeCycle_ = 0;
     double marqueeOffset_ = 0.0;
+    bool splitterDragHold_ = false; // v0.5.4: a divider drag is in progress — the marquee holds still for it
     // fx state
     FxPump fxPump_;
     tickerbar::VisualizerEngine viz_;

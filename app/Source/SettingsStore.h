@@ -33,6 +33,7 @@ inline juce::var toVar(const tickerbar::TickerState& s) {
     set("alertSound", s.alertSound);
     set("alertToasts", s.alertToasts);
     set("linkEnabled", s.linkEnabled);
+    set("linkBackground", s.linkBackground);
     set("theme", juce::String(s.themeName));
     set("bgStyle", (int)s.backgroundStyle);
     set("bgOpacity", s.backgroundOpacity);
@@ -87,6 +88,7 @@ inline tickerbar::TickerState fromVar(const juce::var& v) {
     s.alertSound = gb("alertSound", s.alertSound);
     s.alertToasts = gb("alertToasts", s.alertToasts);
     s.linkEnabled = gb("linkEnabled", s.linkEnabled);
+    s.linkBackground = gb("linkBackground", s.linkBackground);
     s.themeName = g("theme").toString().toStdString();
     if (s.themeName.empty()) s.themeName = "Midnight Kids";
     s.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 3, gi("bgStyle", (int)s.backgroundStyle));

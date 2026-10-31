@@ -32,7 +32,7 @@ public:
     bool reserve(void* hwnd, tickerbar::ReserveEdge edge, int physX, int physY, int physW, int physH);
     void release(); // ABM_REMOVE; safe to call at any time
     bool isReserved() const;
-    struct SavedWindow { void* hwnd; tickerbar::IntRect rect; };
+    struct SavedWindow { void* hwnd; tickerbar::IntRect rect; bool wasMaximized = false; }; // wasMaximized: v0.5.7 — Restore re-maximizes it
     // Fit every other top-level window on hwnd's monitor into the area
     // beyond a strip of stripPhysPx pixels at the given edge. Skips:
     // the bar itself, the shell, minimised, maximised (the AppBar owns

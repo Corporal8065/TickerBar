@@ -19,6 +19,7 @@ struct TickerState {
     bool alertSound = false;       // soft click on a cross — default OFF (spec)
     bool alertToasts = true;       // v0.2.0: Windows toast on a cross — ON (Jackson's request); toggle in Settings
     bool linkEnabled = false;      // v0.2.0: family linking (snap/drag-follow/shared background) — opt-in, default OFF
+    bool linkBackground = true;    // v0.5.6: share background (style/opacity/effect) with linked bars — default ON; the visible toggle Jackson asked for
     // Appearance — MeterBar family: Midnight Kids theme, styled
     // background, opacity slider (bar defaults fully solid: it is a
     // read-at-a-glance instrument, not a meter overlay).

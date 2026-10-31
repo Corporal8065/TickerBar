@@ -117,6 +117,10 @@ public:
     void mouseDown(const juce::MouseEvent&) override {
         lastPos_ = verticalBar ? getMouseXYRelative().getY() : getMouseXYRelative().getX();
         setMouseCursor(verticalBar ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::LeftRightResizeCursor);
+        if (owner) owner->splitterDragBegin(); // v0.5.4: hold the marquee still for this drag
+    }
+    void mouseUp(const juce::MouseEvent&) override {
+        if (owner) owner->splitterDragEnd();
     }
     void mouseDrag(const juce::MouseEvent& e) override {
         auto rel = e.getPosition();
@@ -574,6 +578,31 @@ public:
             button("Reset layout to defaults", [this]{ owner->resetLayoutToDefaults(); });
             note("Layout only: every cell shown again, all dragged cell widths forgotten, coin order back to BTC / ETH / HYPE. Your coins, alerts, theme and poll settings are kept.");
         });
+        panel("Sizes", [&]{
+            note("One slider per coin - the same widths the dividers on the bar drag, so the two always agree. Applies live, whether the bar is scrolling or still. A coin with no width set shares the space automatically (auto).");
+            for (auto& sym : st->watchlist) {
+                const int stored = owner->symbolCellWidth(sym);
+                auto* l = add(new juce::Label({}, juce::String(sym)));
+                l->setFont(juce::Font(12.5f, juce::Font::bold));
+                l->setColour(juce::Label::textColourId, settingsPalette::text());
+                l->setBounds(24, y_, 70, 22);
+                auto* s = add(new juce::Slider());
+                s->setRange(tickerbar::kSymbolCellMinW, tickerbar::kSymbolCellMaxW, 1.0);
+                s->setValue(stored > 0 ? stored : 160, juce::dontSendNotification);
+                s->setBounds(102, y_, 380, 22);
+                auto* ro = add(new juce::Label({}, stored > 0 ? juce::String(stored) + " px" : juce::String("auto")));
+                ro->setFont(11.f);
+                ro->setColour(juce::Label::textColourId, settingsPalette::dimText());
+                ro->setBounds(492, y_, 90, 22);
+                s->onValueChange = [this, s, ro, sym]{
+                    const int px = (int)(s->getValue() + 0.5);
+                    owner->setSymbolCellWidth(sym, px);
+                    ro->setText(juce::String(px) + " px", juce::dontSendNotification);
+                };
+                y_ += 26;
+            }
+            button("Reset all coin widths to auto", [this]{ owner->resetSymbolCellWidths(); });
+        });
         panel("Alerts", [&]{
             toggle("Soft click sound on a cross (default off)", st->alertSound, [&](bool b){ st->alertSound = b; });
             toggle("Windows toast notification on a cross", st->alertToasts, [&](bool b){ st->alertToasts = b; });
@@ -625,6 +654,8 @@ public:
             note("Data colours drive the gain/loss text and the sparklines. Family = the theme's own green/red; the others are pairs of stops from MeterBar's colour maps.");
             combo("Background effect", {"Styled background", "Visualizer particles", "Reactive glow"}, st->bgEffect,
                   [&](int v){ st->bgEffect = v; });
+            toggle("Link background (share style, opacity and effect with linked bars)", st->linkBackground,
+                   [&](bool b){ st->linkBackground = b; owner->onBgLinkToggled(); });
             note("Visualizer: MeterBar's particle brushes (transient-fired emitters shedding strands of dots). Reactive glow: the MiniMeters-style blurred bloom - linked to MeterBar it pulses with the music; on its own it breathes gently. Both render UNDER the cells.");
             slider("Effect palette hue", 0.0, 1.0, st->vizHue, [&](double v){ st->vizHue = (float)v; });
             slider("Effect palette saturation", 0.0, 1.0, st->vizSat, [&](double v){ st->vizSat = (float)v; });
@@ -654,8 +685,10 @@ public:
             note("Arrange slides every other (non-maximised) window on the bar's monitor clear of the bar; Restore puts them back. Screen space: " + owner->screenSpaceStatus());
         });
         panel("About", [&]{
-            button("Check for updates", [this]{ owner->checkForUpdates(); });
-            note("TickerBar v0.4.0 - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
+            buttonRow("Check for updates", "GitHub",
+                      [this]{ owner->checkForUpdates(); },
+                      []{ juce::URL("https://github.com/Corporal8065/TickerBar").launchInDefaultBrowser(); });
+            note("TickerBar " + kVersion + " - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
             note("Detail chart: candlesticks + volume with 24h / 7d / 30d ranges. Coinbase caps one candles request at 300: 24h/7d are hourly, 30d is daily. CoinGecko (HYPE) supplies hourly closes only - no OHLC, no volume, no 30d - and the chart note says so.");
             note("Polls every N seconds (Window panel). If the feed drops, cells grey out and keep the last real prices, marked STALE - never fake-fresh numbers.");
             note("Context cells: Fear & Greed index (alternative.me) and BTC dominance (CoinGecko) poll separately every ~5 minutes and go stale on their own clock - they never block prices.");
@@ -767,10 +800,13 @@ MainComponent::MainComponent() {
         addAndMakeVisible(c);
         c->setInterceptsMouseClicks(false, false); // clicks fall through to the bar drag
     }
-    reserveBtn_.setClickingTogglesState(true);
-    reserveBtn_.setToggleState(state.reserveScreenSpace, juce::dontSendNotification);
-    reserveBtn_.setTooltip("Reserve screen space: Windows keeps maximised windows clear of the docked bar");
-    reserveBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); state.reserveScreenSpace = reserveBtn_.getToggleState(); saveSettings(); syncScreenSpace(); };
+    // v0.5.5: the standalone Reserve button is GONE — Reserve lives
+    // in the Reposition dropdown now (Jackson's ask), as the ticked
+    // "Reserve Screen Space" item. state.reserveScreenSpace itself
+    // (and its settings key) is untouched, so a bar that had Reserve
+    // on keeps it on.
+    reposBtn_.setTooltip("Reposition: dock edge, pin, move to another display - and Reserve Screen Space");
+    reposBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); showRepositionMenu(); };
     linkBtn_.setClickingTogglesState(true);
     linkBtn_.setToggleState(state.linkEnabled, juce::dontSendNotification);
     linkBtn_.setTooltip("Link: snap, drag, dock and share the background with the other family bars (MeterBar / SessionBar) when their Link is on too");
@@ -799,7 +835,7 @@ MainComponent::MainComponent() {
     minBtn_.onClick = [this]{ if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
                                  if (auto* peer = w->getPeer()) peer->setMinimised(true); };
     quitBtn_.onClick = []{ juce::JUCEApplication::getInstance()->systemRequestedQuit(); };
-    for (auto* b : { &reserveBtn_, &linkBtn_, &arrangeBtn_, &restoreBtn_, &presetBtn_, &stackBtn_,
+    for (auto* b : { &linkBtn_, &arrangeBtn_, &restoreBtn_, &presetBtn_, &reposBtn_, &stackBtn_,
                      &dockBtn_, &settingsBtn_, &updateBtn_, &minBtn_, &quitBtn_ }) addAndMakeVisible(b);
     applyChrome();
     // v0.2.0 (k): family link wiring. Bounds are the WINDOW's (the bar
@@ -827,16 +863,18 @@ MainComponent::MainComponent() {
             w->setBounds(safe.x, safe.y, safe.w, safe.h);
         }
     };
-    linkClient_.getBg = [this]{ return BarLinkClient::Bg{ (int)state.backgroundStyle, state.backgroundOpacity }; };
+    linkClient_.getBg = [this]{ return BarLinkClient::Bg{ (int)state.backgroundStyle, state.backgroundOpacity, state.bgEffect }; };
     linkClient_.applyBg = [this](const BarLinkClient::Bg& bg){
         state.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 3, bg.style);
         state.backgroundOpacity = juce::jlimit(0.05f, 1.0f, bg.opacity);
-        saveSettings(); repaint();
+        state.bgEffect = juce::jlimit(0, 2, bg.effect); // BLK3: the effect selection rides the packet too
+        saveSettings(); repaint(); syncFxPump(); // an adopted visualizer/glow must actually start (or stop)
     };
     linkClient_.getDockedEdge = [this]{
         return reserveMachine_.reserved() ? (int)reserveMachine_.edge() : -1;
     };
     linkClient_.isLinked = [this]{ return state.linkEnabled; };
+    linkClient_.bgLinkEnabled = [this]{ return state.linkBackground; }; // v0.5.6
     linkClient_.start();
 
     settingsWin_ = std::make_unique<TickerSettingsWindow>();
@@ -931,10 +969,10 @@ void MainComponent::resized() {
     // The control cluster, in MeterBar's order (item 11).
     struct BtnW { juce::TextButton* b; int w; };
     const BtnW cluster[] = {
-        { &reserveBtn_, 76 }, { &linkBtn_, 52 }, { &arrangeBtn_, 76 }, { &restoreBtn_, 76 },
-        { &presetBtn_, 64 }, { &stackBtn_, 56 }, { &dockBtn_, 62 }, { &settingsBtn_, 72 },
+        { &linkBtn_, 52 }, { &arrangeBtn_, 76 }, { &restoreBtn_, 76 },
+        { &presetBtn_, 64 }, { &reposBtn_, 96 }, { &stackBtn_, 56 }, { &dockBtn_, 62 }, { &settingsBtn_, 72 },
         { &updateBtn_, 68 }, { &minBtn_, 26 }, { &quitBtn_, 46 },
-    };
+    }; // v0.5.5: Reserve's 76 px left the row (it lives in the Reposition menu now); Reposition takes 96 px beside Preset, MeterBar's placement
     auto btnVisible = [this](juce::TextButton* b) { return b != &updateBtn_ || updateAvailable_; };
     updateBtn_.setVisible(updateAvailable_);
     auto r = area.reduced(8, 6);
@@ -973,6 +1011,14 @@ void MainComponent::resized() {
         // wider than the room left here, the whole strip scrolls
         // left in a seamless loop (positionStrip, stepped by the fx
         // pump) and the fitted layout below is skipped entirely.
+        // v0.5.4: the COIN dividers stay live in the scroll —
+        // positionStrip places them between their pairs and a drag
+        // holds the scroll — after Jackson's field report that the
+        // update had taken per-symbol sizing away (the v0.4.0 rule
+        // hid every splitter for the whole marquee phase). The
+        // context/trailing dividers still hide: their cells are
+        // scroll items here, and their sizing returns with the
+        // fitted layout when the strip fits again.
         {
             auto items = stripItems();
             std::vector<int> ext;
@@ -981,7 +1027,6 @@ void MainComponent::resized() {
             marqueeCycle_ = marqueeActive_ ? tickerbar::marqueeCycle(ext, 16) : 0;
             if (marqueeActive_) {
                 stripRect_ = r;
-                for (auto& sp : splitters_) sp->setVisible(false);
                 if (ctxSplitA_) ctxSplitA_->setVisible(false);
                 if (ctxSplitB_) ctxSplitB_->setVisible(false);
                 if (trailSplit_) trailSplit_->setVisible(false);
@@ -1068,7 +1113,9 @@ void MainComponent::resized() {
             marqueeCycle_ = marqueeActive_ ? tickerbar::marqueeCycle(ext, 16) : 0;
             if (marqueeActive_) {
                 stripRect_ = { r.getX(), r.getY(), r.getWidth(), avail };
-                for (auto& sp : splitters_) sp->setVisible(false);
+                // v0.5.4: coin dividers stay live in the scroll, as
+                // in the horizontal branch — positionStrip places
+                // them; only the context/trailing dividers hide.
                 if (ctxSplitA_) ctxSplitA_->setVisible(false);
                 if (ctxSplitB_) ctxSplitB_->setVisible(false);
                 if (trailSplit_) trailSplit_->setVisible(false);
@@ -1160,16 +1207,33 @@ std::vector<MainComponent::StripItem> MainComponent::stripItems() const {
 // One marquee frame: every item at its scrolled position from the
 // core math. Items outside the strip rect are simply clipped by the
 // window; over one cycle each crosses the visible strip once.
+// v0.5.4: the divider between coin items i and i+1 rides the scroll
+// with its pair (core marqueeSplitterRel) and stays visible — the
+// per-symbol sizing handles survive the marquee (Jackson's field
+// report: the v0.4.0 marquee hid them all, so an overflowing strip
+// could never be sized back down). A splitter whose pair straddles
+// the loop seam or sits off-strip is simply clipped/not grabbable
+// until the scroll brings it in, like the cells themselves.
 void MainComponent::positionStrip() {
     if (!marqueeActive_ || marqueeCycle_ <= 0) return;
     auto items = stripItems();
     const int gap = 16, off = (int)std::floor(marqueeOffset_);
-    int base = 0;
+    const int nCoins = (int)cells_.size();
+    int base = 0, idx = 0;
     for (auto& it : items) {
         const int rel = tickerbar::marqueePosition(base, it.extent, off, marqueeCycle_);
         if (vertical_) it.c->setBounds(stripRect_.getX(), stripRect_.getY() + rel, stripRect_.getWidth(), it.extent);
         else it.c->setBounds(stripRect_.getX() + rel, stripRect_.getY(), it.extent, stripRect_.getHeight());
+        if (idx + 1 < nCoins && idx < (int)splitters_.size()) {
+            auto* sp = splitters_[(size_t)idx].get();
+            const int srel = tickerbar::marqueeSplitterRel(rel, it.extent, gap, 10);
+            sp->verticalBar = vertical_;
+            if (vertical_) sp->setBounds(stripRect_.getX(), stripRect_.getY() + srel, stripRect_.getWidth(), 10);
+            else sp->setBounds(stripRect_.getX() + srel, stripRect_.getY(), 10, stripRect_.getHeight());
+            sp->setVisible(true);
+        }
         base += it.extent + gap;
+        ++idx;
     }
 }
 
@@ -1272,6 +1336,14 @@ void MainComponent::onTrailingSplitterDrag(int delta) {
     else b.setWidth(tickerbar::trailingWindowExtent(b.getWidth(), delta, 160, 7680)); // v0.4.0: the free-resize limits
     w->setBounds(b);
 }
+
+// --- divider drag hold (v0.5.4): any CellSplitter press holds the
+// overflow marquee still for the duration of the drag (stepFx's
+// advance gate), so a divider grabbed in the scroll stays under the
+// pointer while its pair's widths change. Outside the marquee the
+// flag is simply never read. ---
+void MainComponent::splitterDragBegin() { splitterDragHold_ = true; }
+void MainComponent::splitterDragEnd() { splitterDragHold_ = false; }
 
 // --- cell drag arbitration (v0.3.0 item 9): the press decides by
 // direction — mostly-along-the-bar past a threshold becomes a cell
@@ -1465,8 +1537,6 @@ void MainComponent::settingsChanged(bool watchlistToo) {
         rebuildCells();
         rebuildSettingsDeferred();
     }
-    if (reserveBtn_.getToggleState() != state.reserveScreenSpace)
-        reserveBtn_.setToggleState(state.reserveScreenSpace, juce::dontSendNotification);
     if (linkBtn_.getToggleState() != state.linkEnabled)
         linkBtn_.setToggleState(state.linkEnabled, juce::dontSendNotification);
     dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
@@ -1481,6 +1551,35 @@ void MainComponent::settingsChanged(bool watchlistToo) {
 // factory coin order); the watchlist-too apply rebuilds the cells
 // in the restored order, persists, and defers a settings-sheet
 // rebuild so the sheet shows the reset state.
+// v0.5.6: the Settings > Sizes panel's read/write path into
+// state.cellWidths — the single store the on-bar dividers also
+// write (adjustPairWidths path above), so panel and dividers
+// always reflect each other. The write tail mirrors the divider
+// drag exactly: persist, then reflow.
+int MainComponent::symbolCellWidth(const std::string& symbol) const {
+    auto it = state.cellWidths.find(symbol);
+    return it == state.cellWidths.end() ? 0 : it->second;
+}
+void MainComponent::setSymbolCellWidth(const std::string& symbol, int px) {
+    state.cellWidths[symbol] = tickerbar::clampSymbolCellWidth(px);
+    saveSettings();
+    resized();
+}
+void MainComponent::resetSymbolCellWidths() {
+    state.cellWidths.clear();
+    saveSettings();
+    resized();
+    rebuildSettingsDeferred(); // the sheet's sliders/readouts re-read the cleared store
+}
+
+// v0.5.6: "Link background" flipped in Settings. Turning it ON
+// re-stamps the current background so linked peers adopt it now;
+// turning it OFF needs nothing (the client's publish/adopt paths
+// consult the toggle). Persistence rides settingsChanged's save.
+void MainComponent::onBgLinkToggled() {
+    linkClient_.notifyBgLinkChanged();
+}
+
 void MainComponent::resetLayoutToDefaults() {
     tickerbar::resetLayoutToDefaults(state);
     settingsChanged(true);
@@ -1648,8 +1747,6 @@ void MainComponent::syncScreenSpace() {
             break;
         }
     }
-    if (reserveBtn_.getToggleState() != state.reserveScreenSpace)
-        reserveBtn_.setToggleState(state.reserveScreenSpace, juce::dontSendNotification);
 }
 
 void MainComponent::doArrange() {
@@ -1696,7 +1793,7 @@ void MainComponent::applyChrome() {
     wordmark_.setColour(juce::Label::textColourId, theme_.accent);
     versionLabel_.setColour(juce::Label::textColourId, theme_.dim);
     statusLabel_.setColour(juce::Label::textColourId, theme_.dim);
-    for (auto* b : { &reserveBtn_, &linkBtn_, &arrangeBtn_, &restoreBtn_, &presetBtn_, &stackBtn_,
+    for (auto* b : { &linkBtn_, &arrangeBtn_, &restoreBtn_, &presetBtn_, &reposBtn_, &stackBtn_,
                      &dockBtn_, &settingsBtn_, &minBtn_, &quitBtn_ }) {
         b->setColour(juce::TextButton::buttonColourId, theme_.panel);
         b->setColour(juce::TextButton::buttonOnColourId, theme_.accent);
@@ -1736,6 +1833,83 @@ void MainComponent::doStackAll() {
 // is a FULL configuration — window position included — and loading
 // one moves the bar (clamped on-screen via the core guard).
 // =====================================================================
+// --- reposition dropdown (v0.5.5) — MeterBar's showRepositionMenu
+// ported (Jackson: "i like the drop down box you did for meter bar
+// can you add that to session and ticker?"), mapped item by item:
+//   MeterBar "At the Top" / "At the Bottom" -> the same two items,
+//     plus "At the Left" / "At the Right": this bar docks to all
+//     four edges (MeterBar's world has two), each ticked when it is
+//     the current dock edge. Picking one is cycleDockEdge's direct
+//     form: set the edge, refresh the Dock button's label, save,
+//     snap.
+//   MeterBar "Pin Above Other Windows" -> identical: state.pinned
+//     + setAlwaysOnTop + save.
+//   MeterBar "Move to Display" submenu -> identical shape; the
+//     move centres the bar on the target display, then
+//     snapToDockEdge settles it onto the current dock edge there.
+//   MeterBar "Stick" -> NOT ported: there is no stick state in
+//     this bar (its pinned + dock model is the equivalent surface).
+//   MeterBar "Show Reposition Hint" -> NOT ported: this bar has
+//     no hint label; the strip's middle is the feed status label.
+//   NEW, all three bars (Jackson's ask): "Reserve Screen Space",
+//     ticked by state.reserveScreenSpace — the standalone Reserve
+//     button is retired; the item toggles the same state through
+//     the same syncScreenSpace path, and the persisted setting is
+//     the same key, so an existing Reserve-on bar keeps it on.
+// Like MeterBar's menu, every action is deferred until the popup
+// has fully closed (its 2026-10-13 field lesson: moving the window
+// from inside the menu callback wedges it).
+void MainComponent::showRepositionMenu() {
+    enum { idTop = 1, idBottom, idLeft, idRight, idPin, idReserve, idDisplayBase = 100 };
+    juce::PopupMenu m;
+    const int edge = (int)state.dockEdge;
+    m.addItem(idTop, "At the Top", true, edge == (int)tickerbar::DockEdge::Top);
+    m.addItem(idBottom, "At the Bottom", true, edge == (int)tickerbar::DockEdge::Bottom);
+    m.addItem(idLeft, "At the Left", true, edge == (int)tickerbar::DockEdge::Left);
+    m.addItem(idRight, "At the Right", true, edge == (int)tickerbar::DockEdge::Right);
+    m.addItem(idPin, "Pin Above Other Windows", true, state.pinned);
+    m.addSeparator();
+    m.addItem(idReserve, "Reserve Screen Space", true, state.reserveScreenSpace);
+    juce::PopupMenu disp;
+    auto displays = juce::Desktop::getInstance().getDisplays().displays;
+    for (int i = 0; i < displays.size(); ++i) disp.addItem(idDisplayBase + i, "Display " + juce::String(i + 1));
+    m.addSubMenu("Move to Display", disp);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(reposBtn_), [this](int r) {
+        juce::MessageManager::callAsync([this, r] {
+            if (r >= idDisplayBase) { doMoveToDisplay(r - idDisplayBase); return; }
+            switch (r) {
+                case idTop: case idBottom: case idLeft: case idRight:
+                    state.dockEdge = (tickerbar::DockEdge)(r - idTop);
+                    dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
+                    saveSettings();
+                    snapToDockEdge();
+                    break;
+                case idPin:
+                    state.pinned = !state.pinned;
+                    if (auto* w = findParentComponentOfClass<juce::DocumentWindow>()) w->setAlwaysOnTop(state.pinned);
+                    saveSettings();
+                    break;
+                case idReserve:
+                    state.reserveScreenSpace = !state.reserveScreenSpace;
+                    saveSettings();
+                    syncScreenSpace();
+                    break;
+                default: break;
+            }
+        });
+    });
+}
+void MainComponent::doMoveToDisplay(int idx) {
+    auto displays = juce::Desktop::getInstance().getDisplays().displays;
+    if (idx < 0 || idx >= displays.size()) return;
+    auto* w = findParentComponentOfClass<juce::DocumentWindow>();
+    if (!w) return;
+    auto b = w->getBounds();
+    b.setCentre(displays[(size_t)idx].userArea.getCentre());
+    w->setBounds(b);
+    snapToDockEdge(); // settle onto the current dock edge of the new display
+}
+
 void MainComponent::showPresetMenu() {
     enum { idNew = 1, idSave, idSaveAs, idOpenFolder, idLoadBase = 100 };
     juce::PopupMenu m;
@@ -2010,8 +2184,10 @@ void MainComponent::stepFx() {
     }
     // v0.4.0: advance the overflow marquee (~45 px/s, news-ticker
     // pace). Paused while a drag gesture owns the strip, so a cell
-    // reorder or a divider drag never fights the scroll.
-    if (marqueeActive_ && dragMode_ == 0) {
+    // reorder or a divider drag never fights the scroll — v0.5.4:
+    // divider drags are real marquee citizens now (the dividers
+    // stay live in the scroll), so their hold joins the gate.
+    if (marqueeActive_ && dragMode_ == 0 && !splitterDragHold_) {
         marqueeOffset_ += 45.0 * (double)dt;
         if (marqueeCycle_ > 0 && marqueeOffset_ >= (double)marqueeCycle_) marqueeOffset_ -= (double)marqueeCycle_;
         positionStrip();

@@ -296,6 +296,29 @@ int main() {
         IntRect high{ 100, 100, 800, 300 };
         CHECK(arrangeFitAbove(high, mon, 72) == high);
     }
+    // ---------- Arrange: maximized windows (v0.5.7) ----------
+    {
+        const IntRect zoomedRect{ 0, 0, 1920, 1080 };   // a maximized window's live rect: the whole monitor
+        const IntRect normalRect{ 100, 10, 800, 600 };  // its rcNormalPosition — overlaps the top strip
+        // zoomed: participates, restore-first, fit input is the NORMAL rect (never the zoomed one)
+        auto zp = planArrangeWindow(true, false, true, zoomedRect, normalRect);
+        CHECK(zp.participate && zp.restoreFirst && zp.fitInput == normalRect);
+        // ...and the fit of that normal rect slides it clear of the strip, like any window
+        CHECK(arrangeFit(zp.fitInput, IntRect{ 0, 0, 1920, 1080 }, 72).y == 72);
+        // normal window: participates on its live rect, no restore step
+        auto np = planArrangeWindow(true, false, false, normalRect, normalRect);
+        CHECK(np.participate && !np.restoreFirst && np.fitInput == normalRect);
+        // the historical skips stay skips: invisible, iconic — zoomed or not
+        CHECK(!planArrangeWindow(false, false, true, zoomedRect, normalRect).participate);
+        CHECK(!planArrangeWindow(true, true, true, zoomedRect, normalRect).participate);
+        // a zoomed window with a degenerate normal rect is left alone
+        CHECK(!planArrangeWindow(true, false, true, zoomedRect, IntRect{ 0, 0, 0, 0 }).participate);
+        // restore plan: a was-maximized snapshot re-maximizes after its rect is applied; others don't
+        auto rp = planRestoreWindow(true);
+        CHECK(rp.applyRect && rp.remaximize);
+        auto rp2 = planRestoreWindow(false);
+        CHECK(rp2.applyRect && !rp2.remaximize);
+    }
     // ---------- State defaults (spec pins) ----------
     {
         TickerState st;
@@ -513,26 +536,27 @@ int main() {
     const long long now = 200000;
     BgSyncState sync;
     // first sight of our own background is a change (nothing published yet)
-    CHECK(bgIsLocalChange(sync, 1, 100));
-    sync.publishedStyle = 1; sync.publishedPct = 100;
-    CHECK(!bgIsLocalChange(sync, 1, 100));
-    CHECK(bgIsLocalChange(sync, 1, 55));  // opacity moved
-    CHECK(bgIsLocalChange(sync, 2, 100)); // style moved
+    CHECK(bgIsLocalChange(sync, 1, 100, 0));
+    sync.publishedStyle = 1; sync.publishedPct = 100; sync.publishedEffect = 0;
+    CHECK(!bgIsLocalChange(sync, 1, 100, 0));
+    CHECK(bgIsLocalChange(sync, 1, 55, 0));  // opacity moved
+    CHECK(bgIsLocalChange(sync, 2, 100, 0)); // style moved
+    CHECK(bgIsLocalChange(sync, 1, 100, 1)); // effect moved (BLK3)
     // a peer publishes a new background: adopted once
     LinkShared sh;
     auto& peer = sh.slots[0]; peer.appId = 0; peer.linked = 1; peer.heartbeatMs = now;
-    peer.bgSeq = 7; peer.bgStyle = 2; peer.bgOpacityPct = 40;
+    peer.bgSeq = 7; peer.bgStyle = 2; peer.bgOpacityPct = 40; peer.bgEffect = 2;
     BgPacket out;
     CHECK(bgAdoption(sh, 1, sync, now, out));
-    CHECK(out.style == 2 && out.opacityPct == 40);
+    CHECK(out.style == 2 && out.opacityPct == 40 && out.effect == 2);
     // the adopted values are now OUR published values: no echo publish
-    CHECK(!bgIsLocalChange(sync, 2, 40));
+    CHECK(!bgIsLocalChange(sync, 2, 40, 2));
     // the same seq is never adopted twice
     CHECK(!bgAdoption(sh, 1, sync, now, out));
     // a genuinely new seq adopts again
-    peer.bgSeq = 8; peer.bgStyle = 0; peer.bgOpacityPct = 90;
+    peer.bgSeq = 8; peer.bgStyle = 0; peer.bgOpacityPct = 90; peer.bgEffect = 1;
     CHECK(bgAdoption(sh, 1, sync, now, out));
-    CHECK(out.style == 0 && out.opacityPct == 90);
+    CHECK(out.style == 0 && out.opacityPct == 90 && out.effect == 1);
     // unlinked peers, stale peers, seq 0 and self never supply a background
     peer.linked = 0; peer.bgSeq = 9;
     CHECK(!bgAdoption(sh, 1, sync, now, out));
@@ -769,6 +793,30 @@ int main() {
             CHECK(seen);
         }
     }
+    // ---------- v0.5.4: marquee dividers ride the scroll ----------
+    {
+        // centred in the 16 px gap after the item: item edge + 3 px
+        // of air, then the 10 px grip — the fitted layout's own
+        // placement, now applied to the scrolled position.
+        CHECK(marqueeSplitterRel(0, 160, 16, 10) == 163);
+        CHECK(marqueeSplitterRel(176, 160, 16, 10) == 339);
+        // the divider tracks its item's WRAPPED position: item 0
+        // half-out at offset 100 sits at -100, its divider at 63 —
+        // still the boundary between it and item 1 (at 76).
+        CHECK(marqueeSplitterRel(marqueePosition(0, 160, 100, 568), 160, 16, 10) == 63);
+        // a narrower item keeps the same 3 px air rule
+        CHECK(marqueeSplitterRel(200, 90, 16, 10) == 293);
+    }
+    // v0.5.6: the Sizes panel's write band for cellWidths — the
+    // solver's own floor and the family's dragged-extent ceiling.
+    {
+        CHECK(clampSymbolCellWidth(10) == kSymbolCellMinW);
+        CHECK(clampSymbolCellWidth(90) == 90);
+        CHECK(clampSymbolCellWidth(160) == 160);
+        CHECK(clampSymbolCellWidth(600) == 600);
+        CHECK(clampSymbolCellWidth(5000) == kSymbolCellMaxW);
+        CHECK(kSymbolCellMinW == 90 && kSymbolCellMaxW == kContextCellMax);
+    }
     // ---------- v0.3.0: BarLink stack planner + audio + republish ----------
     {
         const long long now = 100000;
@@ -795,10 +843,10 @@ int main() {
         CHECK(audioPacket(m, now, pkt));
         CHECK(near(pkt[0], 0.5) && near(pkt[3], 0.75));
         CHECK(!audioPacket(m, now + kPeerStaleMs + 1, pkt)); // stale heartbeat = not live
-        BgSyncState bs; bs.publishedStyle = 2; bs.publishedPct = 80;
-        CHECK(!bgIsLocalChange(bs, 2, 80));
+        BgSyncState bs; bs.publishedStyle = 2; bs.publishedPct = 80; bs.publishedEffect = 1;
+        CHECK(!bgIsLocalChange(bs, 2, 80, 1));
         bgForceRepublish(bs);
-        CHECK(bgIsLocalChange(bs, 2, 80)); // re-stamp forced
+        CHECK(bgIsLocalChange(bs, 2, 80, 1)); // re-stamp forced
     }
     // ---------- group field map: one visualizer field across the linked bars ----------
     {

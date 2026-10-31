@@ -2,6 +2,112 @@
 
 # TickerBar — BUILD LOG
 
+## v0.5.7 (2026-10-31) — Arrange takes maximized windows
+
+Jackson (2026-10-31 15:00 PT): "the arrange does not work when
+the application is already meximized".
+
+- ScreenSpace sweep: IsZoomed out of the skip condition; zoomed
+  windows plan from rcNormalPosition via core planArrangeWindow
+  (Arrange.hpp, +8 checks incl. restore plan), snapshot gains
+  wasMaximized, SW_RESTORE before the fit, Restore re-maximizes
+  per planRestoreWindow. Identical in MeterBar v0.21.4 /
+  SessionBar v0.4.6.
+- Drift repair: this port had lost MeterBar v0.18.1's write-once
+  snapshots (it cleared them per sweep) and the GUI_INMOVESIZE
+  skip — both restored, matching the siblings.
+- MinGW syntax+type check of ScreenSpace.cpp: clean. Suite: core
+  528 checks, 0 failures; version guard green.
+
+## v0.5.6 (2026-10-31) — Sizes panel; Link background toggle + effect in the packet (BLK3)
+
+Jackson (2026-10-31 14:57 PT): "still need a visual UI way of
+changing the size of each thing thats going by for the ticker bar
+and to link th ebackground".
+
+- Sizes: new Settings panel, one slider row per symbol writing
+  state.cellWidths through setSymbolCellWidth (clamped by core
+  clampSymbolCellWidth, 90..600) with the divider drag's exact
+  save + resized tail; reset clears the map only. Core +6 checks
+  for the clamp band.
+- Background link: core BarLink packet extended with bgEffect
+  (BgPacket/BgSyncState/bgIsLocalChange 4-arg; tests updated +
+  effect-moved/adopted checks), LinkSlot field appended, magic
+  BLK3. Client gates publish + adoption on the new persisted
+  state.linkBackground (default on); Settings toggle beside
+  Background effect; applyBg applies the effect and re-runs
+  syncFxPump. MeterBar maps its visualizer bool onto effect
+  1/0; SessionBar mirrors TickerBar.
+- Suites: core 520 checks, 0 failures; version guard green.
+
+## v0.5.5 (2026-10-31) — Reposition dropdown (MeterBar port), Reserve moves into it, GitHub link in Settings (Jackson's asks)
+
+Jackson's asks (2026-10-31): a GitHub link inside each app; the
+MeterBar reposition dropdown for TickerBar and SessionBar; and
+Reserve — the AppBar screen-space toggle — moved off its
+standalone button into that dropdown (his pick over putting it on
+the Link button). Full item map in REQUESTS.md.
+
+- Settings > About: "Check for updates" | "GitHub" button row —
+  GitHub launches https://github.com/Corporal8065/TickerBar. The
+  About version line now composes from kVersion (it was stale
+  "v0.4.0" prose).
+- New reposBtn_ ("Reposition", 96 px beside Preset) +
+  showRepositionMenu(): dock-edge items for all four edges
+  (ticked = current), "Pin Above Other Windows", "Move to
+  Display" submenu, separator, ticked "Reserve Screen Space".
+  Actions deferred past popup close (MeterBar's field lesson);
+  doMoveToDisplay centres on the target display then
+  snapToDockEdge settles the bar.
+- reserveBtn_ deleted everywhere (member, ctor wiring, cluster
+  row in both orientations, applyChrome list, settingsChanged and
+  syncScreenSpace toggle mirrors). The menu item toggles the same
+  state.reserveScreenSpace via syncScreenSpace() + saveSettings()
+  — same settings key, existing users keep their setting.
+- Not ported: MeterBar's "Stick" and "Show Reposition Hint" —
+  neither feature exists in this bar.
+- Version 0.5.4 → 0.5.5 (root project VERSION + .iss fallback).
+
+## v0.5.4 (2026-10-31) — marquee dividers: per-symbol sizing survives the overflow scroll (Jackson's report)
+
+Jackson's report (2026-10-31, after updating): "ok ticker bar
+update good but now i cannot custom change size of each symbol
+directly by clicking on the asset bubble thing."
+
+Diagnosis (full evidence in REQUESTS.md): the v0.4.0 → v0.5.0
+diff contains NO change to mouse handling, the splitter
+components, the layout solver, the marquee math, state/settings,
+or window sizing — v0.5.0's only app delta is the paint-time
+group-field remap, and a paint path cannot eat clicks (the field
+is drawn by MainComponent::paint beneath the children; there is
+no overlay component). The one mechanism that removes the sizing
+interaction is the v0.4.0 overflow marquee itself: on engaging,
+resized() hid every splitter for the whole scroll phase, so a
+strip that overflowed — at the user's own dragged widths, or at
+defaults on a narrower window — confiscated the only handles
+that could change those widths.
+
+- Core: marqueeSplitterRel(itemRel, itemExtent, gap,
+  splitterExtent) — the divider's strip-relative spot in the
+  scroll: centred in the gap after its item, tracking the item's
+  wrapped scrolled position. 4 new checks.
+- App: positionStrip() now places each coin divider after its
+  pair's first cell and keeps it visible (context/trailing
+  dividers still hide in the marquee — their cells are scroll
+  items); CellSplitter presses report to the owner
+  (splitterDragBegin/End) and stepFx's advance gate also reads
+  splitterDragHold_, so a grabbed divider holds the scroll
+  still, as the v0.4.0 comment always promised. Divider drags
+  run through the unchanged onDragDelta → adjustPairWidths →
+  persist path; a strip sized back under the window returns to
+  the fitted layout by itself.
+- Version 0.5.3 → 0.5.4 (root CMakeLists project VERSION — the
+  single source — and the TickerBar.iss fallback define; the
+  generated header and app CMake carriers follow).
+- Proof: core suite 513 checks, 0 failures (4 new); version
+  guard passed; full app build on this VM exit 0, executable
+  linked (the Windows CI build remains the installer proof).
+
 ## v0.5.3 (2026-10-31) — the app reports its real version (Fiona's stuck-on-0.4.0: the primary root cause)
 
 Fiona's report (2026-10-31): after updating TickerBar — in-app,

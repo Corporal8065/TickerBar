@@ -126,7 +126,7 @@ bool ScreenSpace::isReserved() const { return g_appBar.registered; }
 
 // ---- Arrange sweep ------------------------------------------------------
 namespace {
-struct ArrangeMove { HWND hwnd; tickerbar::IntRect from, to; };
+struct ArrangeMove { HWND hwnd; tickerbar::IntRect from, to; bool wasMaximized = false; };
 struct ArrangeCtx {
     HMONITOR mon; HWND exclude; int strip; tickerbar::ReserveEdge edge;
     tickerbar::IntRect monRect;
@@ -135,10 +135,24 @@ struct ArrangeCtx {
 BOOL CALLBACK arrangeEnumProc(HWND hwnd, LPARAM lp) {
     auto* ctx = reinterpret_cast<ArrangeCtx*>(lp);
     if (hwnd == ctx->exclude || hwnd == GetShellWindow()) return TRUE;
-    // Minimised windows have no meaningful on-screen rect; MAXIMISED
-    // windows are deliberately left alone — the AppBar reservation owns
-    // them (Windows sizes them against the shrunken work area).
-    if (!IsWindowVisible(hwnd) || IsIconic(hwnd) || IsZoomed(hwnd)) return TRUE;
+    // Minimised windows have no meaningful on-screen rect. MAXIMISED
+    // windows DO participate since v0.5.7 — via their normal rect
+    // (core planArrangeWindow); before that the sweep skipped them
+    // outright (IsZoomed in this condition), which was Jackson's
+    // "the arrange does not work when the application is already
+    // meximized".
+    const bool zoomed = IsZoomed(hwnd) != FALSE;
+    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
+    // Never fight the user: a window in an interactive move/size loop
+    // (being dragged or edge-resized at this very moment) is skipped
+    // outright. (MeterBar v0.18.1 guard — restored to this port,
+    // where it had drifted out.)
+    {
+        GUITHREADINFO gti{}; gti.cbSize = sizeof gti;
+        const DWORD tid = GetWindowThreadProcessId(hwnd, nullptr);
+        if (tid && GetGUIThreadInfo(tid, &gti) && (gti.flags & GUI_INMOVESIZE) && gti.hwndActive == hwnd)
+            return TRUE;
+    }
     if (MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) != ctx->mon) return TRUE;
     DWORD cloaked = 0; // other virtual desktops / suspended UWP ghosts
     if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof cloaked)) && cloaked)
@@ -147,11 +161,22 @@ BOOL CALLBACK arrangeEnumProc(HWND hwnd, LPARAM lp) {
     RECT r{};
     if (!GetWindowRect(hwnd, &r)) return TRUE;
     const tickerbar::IntRect wr{ r.left, r.top, r.right - r.left, r.bottom - r.top };
-    if (wr.w <= 0 || wr.h <= 0) return TRUE;
+    tickerbar::IntRect normal{};
+    if (zoomed) {
+        WINDOWPLACEMENT wp{}; wp.length = sizeof wp;
+        if (!GetWindowPlacement(hwnd, &wp)) return TRUE;
+        normal = { wp.rcNormalPosition.left, wp.rcNormalPosition.top,
+                   wp.rcNormalPosition.right - wp.rcNormalPosition.left,
+                   wp.rcNormalPosition.bottom - wp.rcNormalPosition.top };
+    }
+    const auto plan = tickerbar::planArrangeWindow(true, false, zoomed, wr, normal);
+    if (!plan.participate) return TRUE;
     // Fit FIRST, move later: mutating windows mid-enumeration can disturb
-    // the enumeration itself, so this pass only collects the plan.
-    const tickerbar::IntRect fit = tickerbar::arrangeFit(wr, ctx->monRect, ctx->edge, ctx->strip);
-    if (fit != wr) ctx->moves.push_back({ hwnd, wr, fit });
+    // the enumeration itself, so this pass only collects the plan. The
+    // snapshot (plan.fitInput + the zoomed flag) is recorded in the
+    // move, BEFORE anything is touched.
+    const tickerbar::IntRect fit = tickerbar::arrangeFit(plan.fitInput, ctx->monRect, ctx->edge, ctx->strip);
+    if (fit != plan.fitInput) ctx->moves.push_back({ hwnd, plan.fitInput, fit, zoomed });
     return TRUE;
 }
 } // namespace
@@ -170,10 +195,16 @@ int ScreenSpace::arrange(void* hwndV, int stripPhysPx, tickerbar::ReserveEdge ed
                       mi.rcMonitor.right - mi.rcMonitor.left,
                       mi.rcMonitor.bottom - mi.rcMonitor.top }, {} };
     EnumWindows(arrangeEnumProc, reinterpret_cast<LPARAM>(&ctx));
-    impl_->saved.clear(); // each sweep snapshots fresh originals
     int moved = 0;
     for (auto& mv : ctx.moves) {
-        impl_->saved.push_back({ mv.hwnd, mv.from });
+        // Snapshots are WRITE-ONCE (MeterBar v0.18.1 — restored to this
+        // port, which used to clear the record every sweep): a window
+        // whose home is already recorded keeps that home. Only
+        // restore() clears the record.
+        bool known = false;
+        for (auto& s : impl_->saved) if (s.hwnd == mv.hwnd) { known = true; break; }
+        if (!known) impl_->saved.push_back({ mv.hwnd, mv.from, mv.wasMaximized });
+        if (mv.wasMaximized) ShowWindow(mv.hwnd, SW_RESTORE); // un-maximize first; the fit then applies to the restored window
         if (SetWindowPos(mv.hwnd, nullptr, mv.to.x, mv.to.y, mv.to.w, mv.to.h,
                          SWP_NOZORDER | SWP_NOACTIVATE))
             ++moved;
@@ -188,10 +219,14 @@ int ScreenSpace::restore() {
     int n = 0;
     for (auto it = impl_->saved.rbegin(); it != impl_->saved.rend(); ++it) {
         HWND hwnd = static_cast<HWND>(it->hwnd);
-        if (IsWindow(hwnd) && SetWindowPos(hwnd, nullptr, it->rect.x, it->rect.y,
-                                            it->rect.w, it->rect.h,
-                                            SWP_NOZORDER | SWP_NOACTIVATE))
+        if (!IsWindow(hwnd)) continue;
+        const auto plan = tickerbar::planRestoreWindow(it->wasMaximized);
+        if (SetWindowPos(hwnd, nullptr, it->rect.x, it->rect.y,
+                         it->rect.w, it->rect.h,
+                         SWP_NOZORDER | SWP_NOACTIVATE)) {
             ++n;
+            if (plan.remaximize) ShowWindow(hwnd, SW_MAXIMIZE); // home was maximized: go back maximized, never stranded restored-down
+        }
     }
     impl_->saved.clear();
     char buf[96];
