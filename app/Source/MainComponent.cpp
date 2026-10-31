@@ -11,8 +11,8 @@
 #if JUCE_WINDOWS
  #include <windows.h> // native rects for the AppBar sync (physical pixels)
 #endif
-static const char* kVersion = "v0.3.2";
-static const char* kVersionNum = "0.3.2";
+static const char* kVersion = "v0.4.0";
+static const char* kVersionNum = "0.4.0";
 static juce::String dockEdgeName(tickerbar::DockEdge e) {
     switch (e) {
         case tickerbar::DockEdge::Top: return "Top";
@@ -151,8 +151,10 @@ public:
         const auto& th = owner->theme();
         auto b = getLocalBounds().toFloat().reduced(1.f);
         const float alpha = stale ? 0.55f : 1.0f;
-        g.setColour(th.panel.withAlpha((owner->fxActive() ? 0.55f : 0.92f) * alpha));
-        g.fillRoundedRectangle(b, 8.f);
+        // v0.4.0 (Jackson's ask): NO panel fill — each symbol's cell
+        // background is transparent, so the bar's own background
+        // (styled gradient / blurred fx) shows straight through.
+        // The border alone carries the cell's shape.
         if (flashing()) {
             const bool phase = (juce::Time::currentTimeMillis() / 400) % 2 == 0;
             g.setColour((phase ? th.warn : th.accent).withAlpha(0.95f));
@@ -262,8 +264,7 @@ public:
         const auto& th = owner->theme();
         auto b = getLocalBounds().toFloat().reduced(1.f);
         const float alpha = stale ? 0.55f : 1.0f;
-        g.setColour(th.panel.withAlpha((owner->fxActive() ? 0.55f : 0.92f) * alpha));
-        g.fillRoundedRectangle(b, 8.f);
+        // v0.4.0: transparent background like the coin cells (border only).
         g.setColour(th.border.withAlpha(alpha));
         g.drawRoundedRectangle(b, 8.f, 1.f);
         auto r = b.reduced(9.f, 5.f);
@@ -645,7 +646,7 @@ public:
         });
         panel("About", [&]{
             button("Check for updates", [this]{ owner->checkForUpdates(); });
-            note("TickerBar v0.3.2 - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
+            note("TickerBar v0.4.0 - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
             note("Detail chart: candlesticks + volume with 24h / 7d / 30d ranges. Coinbase caps one candles request at 300: 24h/7d are hourly, 30d is daily. CoinGecko (HYPE) supplies hourly closes only - no OHLC, no volume, no 30d - and the chart note says so.");
             note("Polls every N seconds (Window panel). If the feed drops, cells grey out and keep the last real prices, marked STALE - never fake-fresh numbers.");
             note("Context cells: Fear & Greed index (alternative.me) and BTC dominance (CoinGecko) poll separately every ~5 minutes and go stale on their own clock - they never block prices.");
@@ -856,7 +857,7 @@ MainComponent::MainComponent() {
     fxPump_.onTick = [this]{ stepFx(); };
 
     applyTheme();
-    state.windowW = std::max(state.windowW, minimumBarWidth()); // supported-width floor from the first frame
+    state.windowW = std::max(state.windowW, 160); // v0.4.0: free resize (Jackson's ask) — the old supported-width floor is gone; overflow scrolls instead
     rebuildCells();
     client_.setWatchlist(state.watchlist);
     client_.setPollSec(state.pollSec);
@@ -941,6 +942,26 @@ void MainComponent::resized() {
         r.removeFromTop(4);
         // ---- cells row ----
         if (anime && mascot_) { mascot_->setBounds(r.removeFromRight(72)); r.removeFromRight(6); }
+        // v0.4.0 overflow marquee: if the strip's natural content is
+        // wider than the room left here, the whole strip scrolls
+        // left in a seamless loop (positionStrip, stepped by the fx
+        // pump) and the fitted layout below is skipped entirely.
+        {
+            auto items = stripItems();
+            std::vector<int> ext;
+            for (auto& it : items) ext.push_back(it.extent);
+            marqueeActive_ = tickerbar::marqueeNeeded(ext, 16, r.getWidth());
+            marqueeCycle_ = marqueeActive_ ? tickerbar::marqueeCycle(ext, 16) : 0;
+            if (marqueeActive_) {
+                stripRect_ = r;
+                for (auto& sp : splitters_) sp->setVisible(false);
+                if (ctxSplitA_) ctxSplitA_->setVisible(false);
+                if (ctxSplitB_) ctxSplitB_->setVisible(false);
+                if (trailSplit_) trailSplit_->setVisible(false);
+                positionStrip();
+            }
+        }
+        if (!marqueeActive_) {
         // Context cells at the right end (DOM outermost, then
         // FNG), each visible one at its effective width with a
         // draggable divider on its inner side — the coin-divider
@@ -982,13 +1003,15 @@ void MainComponent::resized() {
                 x += widths[(size_t)i];
                 if (i + 1 < n && i < (int)splitters_.size()) {
                     splitters_[(size_t)i]->verticalBar = false;
+                    splitters_[(size_t)i]->setVisible(true); // back from a marquee phase
                     splitters_[(size_t)i]->setBounds(x + 3, r.getY(), 10, r.getHeight());
                 }
                 x += boundary;
             }
         }
+        } // !marqueeActive_
         if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-            w->setResizeLimits(minimumBarWidth(), 92, 3840, 1200);
+            w->setResizeLimits(160, 48, 7680, 2160); // v0.4.0: free resize (was the minimumBarWidth()/92 supported floor)
     } else {
         // ---- vertical: wordmark row, cluster grid, cells stacked ----
         auto wm = r.removeFromTop(24);
@@ -1006,6 +1029,27 @@ void MainComponent::resized() {
             bx += bw.w + 4;
         }
         r.removeFromTop(by - r.getY() + 28);
+        // v0.4.0 overflow marquee, vertical form: when the stack's
+        // natural height overflows the room, it scrolls in a loop
+        // (positionStrip) and the fitted stack below is skipped.
+        {
+            auto items = stripItems();
+            std::vector<int> ext;
+            for (auto& it : items) ext.push_back(it.extent);
+            const int avail = r.getHeight() - ((anime && mascot_) ? 96 : 0);
+            marqueeActive_ = tickerbar::marqueeNeeded(ext, 16, avail);
+            marqueeCycle_ = marqueeActive_ ? tickerbar::marqueeCycle(ext, 16) : 0;
+            if (marqueeActive_) {
+                stripRect_ = { r.getX(), r.getY(), r.getWidth(), avail };
+                for (auto& sp : splitters_) sp->setVisible(false);
+                if (ctxSplitA_) ctxSplitA_->setVisible(false);
+                if (ctxSplitB_) ctxSplitB_->setVisible(false);
+                if (trailSplit_) trailSplit_->setVisible(false);
+                positionStrip();
+                if (anime && mascot_) mascot_->setBounds(r.getX(), r.getBottom() - 96, r.getWidth(), 96);
+            }
+        }
+        if (!marqueeActive_) {
         // cells stacked full-width; persisted widths become heights
         const int boundary = 16;
         auto placeRow = [&](juce::Component* c, int h) {
@@ -1036,6 +1080,7 @@ void MainComponent::resized() {
                 placeRow(cells_[(size_t)i].get(), heights[(size_t)i]);
                 if (i + 1 < n && i < (int)splitters_.size()) {
                     splitters_[(size_t)i]->verticalBar = true;
+                    splitters_[(size_t)i]->setVisible(true); // back from a marquee phase
                     splitters_[(size_t)i]->setBounds(r.getX(), r.getY() + 3, r.getWidth(), 10);
                 } else if (showTrail && i == n - 1 && trailSplit_) {
                     trailSplit_->verticalBar = true;
@@ -1057,10 +1102,48 @@ void MainComponent::resized() {
         if (showF) placeCtxRow(fngCell_.get(), fngH, ctxSplitA_.get());
         if (showD) placeCtxRow(domCell_.get(), domH, showF ? ctxSplitB_.get() : ctxSplitA_.get());
         if (anime && mascot_) mascot_->setBounds(r.removeFromTop(96));
+        } // !marqueeActive_
         if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-            w->setResizeLimits(200, 340, 1200, 3840);
+            w->setResizeLimits(160, 240, 2160, 7680); // v0.4.0: free resize
     }
     syncScreenSpace(); // v0.2.0: a resize is a reserve-machine event
+    syncFxPump();      // v0.4.0: a resize can start/stop the marquee, which rides the fx pump
+}
+
+// --- overflow marquee (v0.4.0). The strip's flow order — coins in
+// watchlist order, then the visible context cells (Fear & Greed,
+// BTC dominance), matching the order both fitted layouts present.
+// A coin's natural extent is its dragged width when one is stored,
+// else a comfortable default; context cells use their core extent.
+std::vector<MainComponent::StripItem> MainComponent::stripItems() const {
+    std::vector<StripItem> out;
+    const int defCoin = vertical_ ? 96 : 160;
+    const int minCoin = vertical_ ? 56 : 90; // the solver floors, mirrored
+    for (auto& c : cells_) {
+        int e = defCoin;
+        auto it = state.cellWidths.find(c->symbol);
+        if (it != state.cellWidths.end() && it->second > 0) e = std::max(it->second, minCoin);
+        out.push_back({ c.get(), e });
+    }
+    if (state.showFearGreed && fngCell_) out.push_back({ fngCell_.get(), tickerbar::contextCellExtent(state.fngCellWidth, vertical_) });
+    if (state.showBtcDominance && domCell_) out.push_back({ domCell_.get(), tickerbar::contextCellExtent(state.domCellWidth, vertical_) });
+    return out;
+}
+
+// One marquee frame: every item at its scrolled position from the
+// core math. Items outside the strip rect are simply clipped by the
+// window; over one cycle each crosses the visible strip once.
+void MainComponent::positionStrip() {
+    if (!marqueeActive_ || marqueeCycle_ <= 0) return;
+    auto items = stripItems();
+    const int gap = 16, off = (int)std::floor(marqueeOffset_);
+    int base = 0;
+    for (auto& it : items) {
+        const int rel = tickerbar::marqueePosition(base, it.extent, off, marqueeCycle_);
+        if (vertical_) it.c->setBounds(stripRect_.getX(), stripRect_.getY() + rel, stripRect_.getWidth(), it.extent);
+        else it.c->setBounds(stripRect_.getX() + rel, stripRect_.getY(), it.extent, stripRect_.getHeight());
+        base += it.extent + gap;
+    }
 }
 
 void MainComponent::mouseDown(const juce::MouseEvent& e) { windowDragStarted(e); }
@@ -1158,8 +1241,8 @@ void MainComponent::onTrailingSplitterDrag(int delta) {
     auto* w = findParentComponentOfClass<juce::DocumentWindow>();
     if (w == nullptr) return;
     auto b = w->getBounds();
-    if (vertical_) b.setHeight(tickerbar::trailingWindowExtent(b.getHeight(), delta, 340, 3840));
-    else b.setWidth(tickerbar::trailingWindowExtent(b.getWidth(), delta, minimumBarWidth(), 3840));
+    if (vertical_) b.setHeight(tickerbar::trailingWindowExtent(b.getHeight(), delta, 240, 7680));
+    else b.setWidth(tickerbar::trailingWindowExtent(b.getWidth(), delta, 160, 7680)); // v0.4.0: the free-resize limits
     w->setBounds(b);
 }
 
@@ -1878,7 +1961,7 @@ tickerbar::GlowSettings MainComponent::glowSettings() const {
     return gs;
 }
 void MainComponent::syncFxPump() {
-    fxPump_.setRunning(state.bgEffect != 0 || (mascot_ && mascot_->isVisible()));
+    fxPump_.setRunning(state.bgEffect != 0 || (mascot_ && mascot_->isVisible()) || marqueeActive_);
 }
 void MainComponent::stepFx() {
     const float dt = 1.f / 30.f;
@@ -1897,6 +1980,14 @@ void MainComponent::stepFx() {
         mascot_->excited = mascotAnim_.excited(now);
         mascot_->bobPx = mascotAnim_.bobPx(now);
         mascot_->repaint();
+    }
+    // v0.4.0: advance the overflow marquee (~45 px/s, news-ticker
+    // pace). Paused while a drag gesture owns the strip, so a cell
+    // reorder or a divider drag never fights the scroll.
+    if (marqueeActive_ && dragMode_ == 0) {
+        marqueeOffset_ += 45.0 * (double)dt;
+        if (marqueeCycle_ > 0 && marqueeOffset_ >= (double)marqueeCycle_) marqueeOffset_ -= (double)marqueeCycle_;
+        positionStrip();
     }
     if (state.bgEffect != 0) repaint();
 }
@@ -1920,21 +2011,25 @@ void MainComponent::drawVisualizerBackground(juce::Graphics& g) {
             auto c = viz_.colorFor(pt, vs);
             ig.setColour(juce::Colour(c.r, c.g, c.b));
             const float px = pt.x * (float)iw, py = pt.y * (float)ih;
-            const float r = pt.size;
+            const float r = pt.size * 1.35f; // v0.4.0: plumper dots — softer, rounder blobs after the blur
             ig.fillEllipse(px - r, py - r, r * 2.f, r * 2.f);
         }
     }
     vizBlur_ = vizCache_;
     vizBlur_.duplicateIfShared();
-    juce::ImageConvolutionKernel kernel(5);
-    kernel.createGaussianBlur(1.8f);
+    juce::ImageConvolutionKernel kernel(7);
+    kernel.createGaussianBlur(2.8f); // v0.4.0: a real, stronger blur (was 5/1.8) — the vibey wash
     kernel.applyToImage(vizBlur_, vizCache_, vizBlur_.getBounds());
     const float op = juce::jlimit(0.15f, 1.0f, state.backgroundOpacity);
     g.setOpacity(op);
     g.drawImage(vizBlur_, bounds.toFloat());
-    g.setOpacity(0.9f * op);
+    g.setOpacity(0.45f * op); // v0.4.0: the crisp pass backs off — shapes read as soft rounds, not hard dots
     g.drawImage(vizCache_, bounds.toFloat());
     g.setOpacity(1.0f);
+    // v0.4.0: a dark scrim over the whole effect — the darker,
+    // moodier tone Jackson asked for; text stays on top of it.
+    g.setColour(juce::Colours::black.withAlpha(0.18f));
+    g.fillRect(bounds);
 }
 void MainComponent::drawGlowBackground(juce::Graphics& g) {
     // The reactive glow: sample the core field in GROUP space (the

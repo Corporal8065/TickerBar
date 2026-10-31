@@ -124,6 +124,13 @@ private:
     void applyWindowRectFromState(); // preset/startup position apply, clamped on-screen (core WindowGeom)
     // animated backgrounds (v0.3.0 items 7/17) + mascot (item 18)
     void stepFx();
+    // overflow marquee (v0.4.0): when the strip's natural content is
+    // wider than the bar, it scrolls (core Layout marquee math).
+    // stripItems() is the flow order shared by resized() and the
+    // per-frame repositioning; positionStrip() applies one frame.
+    struct StripItem { juce::Component* c; int extent; };
+    std::vector<StripItem> stripItems() const;
+    void positionStrip();
     void drawVisualizerBackground(juce::Graphics& g);
     void drawGlowBackground(juce::Graphics& g);
     tickerbar::VisualizerSettings vizSettings() const;
@@ -180,6 +187,13 @@ private:
     std::unique_ptr<juce::URL::DownloadTask> updateDownload_;
     bool updateDownloadPending_ = false;
     juce::File updateInstallerFile_;
+    // marquee state (v0.4.0): stripRect_ is the cell strip's area as
+    // computed by resized(); the offset advances in stepFx() while
+    // the content overflows and no drag is in progress.
+    juce::Rectangle<int> stripRect_;
+    bool marqueeActive_ = false;
+    int marqueeCycle_ = 0;
+    double marqueeOffset_ = 0.0;
     // fx state
     FxPump fxPump_;
     tickerbar::VisualizerEngine viz_;

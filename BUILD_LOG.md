@@ -2,6 +2,67 @@
 
 # TickerBar — BUILD LOG
 
+## v0.4.0 (2026-10-31) — Jackson's feel pass: free resize, overflow marquee, softer+darker visualizer, transparent cells
+
+Jackson's direct ask (2026-10-31), all seven items; per-item
+record in REQUESTS.md. Core suite 455 → 477 checks, 0 failures.
+The first full app build caught a real compile error in the
+new marquee code (`auto*` ranged over the unique_ptr splitter
+vector — see REQUESTS.md for the verbatim error); fixed, and
+both edited translation units then pass a full syntax/type
+check against the JUCE headers. A complete app link on the
+build VM was blocked after the VM was replaced mid-work
+(missing X11 extension dev headers), so the Windows Actions
+build is still the owed full-build proof. The push to main
+was BLOCKED on 2026-10-31 — the VM's egress proxy resets SSH
+to GitHub before key exchange (repeated attempts) — so the
+work is committed locally only. No release was cut. The
+backdrop blur and the marquee's feel also need Jackson's eyes
+on his machine — nothing visual was verified by the builder.
+
+- **Free resize.** The supported-size floors are gone: the
+  window now resizes 160..7680 px wide and 48..2160 px tall
+  (horizontal; vertical mirrors), the constructor no longer
+  clamps the restored width up to the old minimum, and the
+  trailing divider drags across the same new range. Per-ticker
+  resizing is unchanged (the divider system). Resizing BELOW
+  the content's natural width no longer squeezes the cells —
+  it starts the marquee.
+- **Overflow marquee.** When the strip's natural width (coins
+  at their dragged-or-default widths plus the visible context
+  cells) exceeds the bar, the whole strip scrolls left at
+  ~45 px/s in a seamless loop — pure math in the core
+  (`marqueeNeeded` / `marqueeCycle` / `marqueePosition`: item i
+  sits at (cumulative offset − scroll) wrapped over
+  content + a 56 px breathing gap, so every ticker crosses the
+  window once per cycle). Dividers hide while it scrolls; the
+  scroll pauses during any drag; the fx pump keeps it moving.
+  When everything fits, the fitted layout runs exactly as
+  before. Both orientations (vertical scrolls upward).
+- **Visualizer: rounder, blurrier, darker, quiet in silence.**
+  Dots render 1.35× plumper, the Gaussian blur grows (kernel
+  5/1.8 → 7/2.8), the crisp pass drops from 0.9 to 0.45 opacity,
+  and a 0.18 black scrim sits over the effect — soft rounds in
+  a darker wash. The white ambient particles are now gated on
+  smoothed band activity (fast attack, slow release): in
+  silence — including the linked feed's null sections — they
+  fade to nothing instead of idling white; the colored strands
+  are untouched. MeterBar v0.20.3 carries the same gate and
+  render numbers for its sibling copy of the engine.
+- **Real backdrop blur.** The window asks Windows for acrylic
+  blur-behind (dark plum tint) behind its translucent pixels,
+  falling back to plain blur-behind, loaded dynamically
+  (SetWindowCompositionAttribute) so nothing new links and
+  unsupported systems just keep the old translucency.
+- **Transparent symbol cells.** Coin and context cells no
+  longer fill their panel — the border alone carries the
+  shape, and the bar background (styled gradient or the
+  blurred visualizer) shows through each symbol.
+- **Trim (interpretation, recorded in REQUESTS.md).** TickerBar
+  has no trim control; the family's Trim is MeterBar's input
+  trim. Its range doubles in MeterBar v0.20.3: −24..+24 dB →
+  −48..+48 dB (default +10.18 dB unchanged).
+
 ## v0.3.2 (2026-10-29) — Vishona's follow-ups: layout fill, trailing divider, reset
 
 Field fixes from Vishona's first v0.3.1 session, via #crypto-book.

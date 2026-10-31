@@ -144,6 +144,45 @@ inline int contextCellExtent(int stored, bool vertical) {
     return stored < kContextCellMin ? kContextCellMin : (stored > kContextCellMax ? kContextCellMax : stored);
 }
 
+// ------------------------------------------------------------------
+// OVERFLOW MARQUEE (v0.4.0, Jackson's ask): when the strip's natural
+// content is wider than the bar itself, the strip scrolls left in a
+// seamless loop — news-ticker style — so every cell gets its turn on
+// screen instead of being squeezed or clipped away. Pure 1-D math on
+// the bar axis (width when horizontal, height when vertical); the
+// app feeds natural extents and a free-running pixel offset.
+inline constexpr int kMarqueeLoopGapPx = 56; // blank run between the last cell and the first cell's re-entry
+
+// Total natural extent of the strip: extents + the gaps between them.
+inline int stripNaturalExtent(const std::vector<int>& extents, int gap) {
+    int total = 0;
+    for (size_t i = 0; i < extents.size(); ++i) total += extents[i] + (i ? gap : 0);
+    return total;
+}
+
+// The marquee runs only when the natural content cannot fit.
+inline bool marqueeNeeded(const std::vector<int>& extents, int gap, int avail) {
+    return !extents.empty() && stripNaturalExtent(extents, gap) > avail;
+}
+
+// One full loop of the scroll: the content plus the loop gap.
+inline int marqueeCycle(const std::vector<int>& extents, int gap) {
+    return stripNaturalExtent(extents, gap) + kMarqueeLoopGapPx;
+}
+
+// Strip-relative position of the item whose un-scrolled base offset
+// is `base`, at scroll `offset` in a loop of `cycle` px. The result
+// may be negative (the item is sliding out) or beyond the visible
+// extent (waiting to re-enter) — the caller clips. Over one full
+// cycle every item crosses the visible window exactly once.
+inline int marqueePosition(int base, int extent, int offset, int cycle) {
+    if (cycle <= 0) return base;
+    int rel = (base - offset) % cycle;
+    if (rel < 0) rel += cycle;
+    if (rel > cycle - extent) rel -= cycle; // half-out on the near side reads as a negative position
+    return rel;
+}
+
 // Where a dragged cell would land: the count of sibling centres the
 // pointer has passed = the insertion slot (0..n) in the sibling list
 // WITHOUT the dragged cell.

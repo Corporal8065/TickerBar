@@ -682,6 +682,61 @@ int main() {
         for (int i = 0; i < 120; ++i) e2.update(0.016f, loud, small);
         CHECK((int)e2.particles().size() <= 40);
     }
+    // ---------- v0.4.0: silence gate — no white particles in silence ----------
+    {
+        VisualizerSettings vs; vs.enabled = true;
+        VisualizerEngine e;
+        const float zero[3] = { 0.f, 0.f, 0.f };
+        for (int i = 0; i < 240; ++i) e.update(0.016f, zero, vs); // ~4 s of silence
+        CHECK(e.activity() < 0.02f);
+        CHECK(e.ambientVisibility() < 0.05f);
+        int brightest = 0;
+        for (auto& p : e.particles()) if (!p.burst) {
+            auto c = e.colorFor(p, vs);
+            if ((int)c.r > brightest) brightest = c.r;
+        }
+        CHECK(brightest < 12); // ambient whites are (near-)invisible in silence
+        const float mid[3] = { 0.5f, 0.5f, 0.5f }; // real energy, below the burst trigger
+        for (int i = 0; i < 90; ++i) e.update(0.016f, mid, vs);
+        CHECK(e.activity() > 0.3f);
+        CHECK(e.ambientVisibility() > 0.9f);
+        brightest = 0;
+        for (auto& p : e.particles()) if (!p.burst) {
+            auto c = e.colorFor(p, vs);
+            if ((int)c.r > brightest) brightest = c.r;
+        }
+        CHECK(brightest > 150); // and the whites are back once the bands carry energy
+    }
+    // ---------- v0.4.0: overflow marquee math ----------
+    {
+        const std::vector<int> three = { 160, 160, 160 };
+        CHECK(stripNaturalExtent(three, 16) == 512);
+        CHECK(marqueeNeeded(three, 16, 400));
+        CHECK(!marqueeNeeded(three, 16, 512));
+        CHECK(!marqueeNeeded({}, 16, 10));
+        const int cyc = marqueeCycle(three, 16);
+        CHECK(cyc == 512 + kMarqueeLoopGapPx);
+        // un-scrolled bases
+        CHECK(marqueePosition(0, 160, 0, cyc) == 0);
+        CHECK(marqueePosition(176, 160, 0, cyc) == 176);
+        CHECK(marqueePosition(352, 160, 0, cyc) == 352);
+        // scrolled 100 px: everything moved left; item 0 is half-out (negative)
+        CHECK(marqueePosition(0, 160, 100, cyc) == -100);
+        CHECK(marqueePosition(176, 160, 100, cyc) == 76);
+        CHECK(marqueePosition(352, 160, 100, cyc) == 252);
+        // a full cycle later the picture repeats exactly (seamless loop)
+        CHECK(marqueePosition(0, 160, cyc, cyc) == 0);
+        CHECK(marqueePosition(352, 160, cyc + 100, cyc) == 252);
+        // every item crosses a 400 px window over one cycle (nothing is lost)
+        for (int base : { 0, 176, 352 }) {
+            bool seen = false;
+            for (int off = 0; off < cyc; off += 4) {
+                const int p = marqueePosition(base, 160, off, cyc);
+                if (p > -160 && p < 400) { seen = true; break; }
+            }
+            CHECK(seen);
+        }
+    }
     // ---------- v0.3.0: BarLink stack planner + audio + republish ----------
     {
         const long long now = 100000;

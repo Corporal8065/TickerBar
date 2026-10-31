@@ -4,6 +4,95 @@ Verification rule (Jackson, 2026-10-29): every item is DONE only with
 proof — the full core suite green after the change, new checks for new
 behaviour, and errors recorded here with their actual text, never hidden.
 
+## v0.4.0 (2026-10-31) — Jackson's feel pass (his direct ask, web chat)
+
+His words, lightly trimmed: "(1) resizable however you want,
+including each ticker; (2) if it's more than the current width
+it scrolls to the left to add each one like the news; (3) the
+visualizer background with the colorful sound-reactive circles
+— more curved; (4) don't show the white circles that come with
+the null sections of the response; (5) increase the ability to
+put a larger input in the trim; (6) there isn't really a blur
+yet — more vibey, a blur in the background, darker tone;
+(7) each symbol's background transparent too."
+
+- **(1) Free resize — DONE in code.** Window resize limits
+  160..7680 × 48..2160 (was the 412..692 px "supported" floor
+  × 92..1200); the constructor's restored-width clamp lowered
+  to 160; the trailing divider's drag range follows the same
+  limits. Per-ticker resizing is the existing divider system,
+  untouched. Proof: core suite green (below); the app-layer
+  numbers are plain limit constants.
+- **(2) Overflow marquee — DONE in code.** Core gains the pure
+  marquee math (`stripNaturalExtent`, `marqueeNeeded`,
+  `marqueeCycle`, `marqueePosition`) with 15 new checks:
+  fits → no scroll; overflow → cycle = content + 56 px gap;
+  positions wrap so every item crosses a window narrower than
+  the content over one cycle. App: when the natural strip
+  (dragged-or-default coin widths + visible context cells)
+  exceeds the room, dividers hide, the strip scrolls at
+  ~45 px/s via the fx pump, paused during drags; both
+  orientations. When it fits, the previous fitted layout runs
+  byte-for-byte as before.
+- **(3) Rounder circles — DONE in code.** Rendered dots 1.35×
+  plumper and the blur/crisp balance shifted (see 6) so the
+  shapes read as soft rounds. The core geometry (arcs and
+  strands) is unchanged — the roundness Jackson sees is the
+  render, and the render is what changed.
+- **(4) No white circles in silence — DONE, core-proven.**
+  Root cause: the visualizer's ambient particles are WHITE by
+  design and keep converging whether or not the bands carry
+  energy, so null sections of the linked MeterBar feed (and
+  plain silence) showed white circles. Fix: an activity gate
+  in the engine — smoothed max band energy (attack 6/s,
+  release 0.8/s); ambient white brightness scales by
+  clamp(activity / 0.30), so silence fades the whites to
+  invisible while music keeps them. New checks: after 4 s of
+  zero bands the brightest ambient particle is < 12/255;
+  after 0.5 s at 0.5 energy it is > 150/255. Colored burst
+  strands are not gated (they only fire on real hits anyway).
+- **(5) Bigger trim input — DONE by interpretation (MeterBar).**
+  TickerBar has NO trim control anywhere (searched: the only
+  "trim" in this repo is whitespace trimming). The family's
+  trim is MeterBar's "Trim dB" input trim, so the wider range
+  landed there: **−24..+24 dB → −48..+48 dB** in MeterBar
+  v0.20.3 (slider + state comment; default +10.18 dB and the
+  gain law unchanged).
+- **(6) Real blur + darker tone — DONE in code, needs field
+  eyes.** Two layers: (a) the visualizer render itself now
+  blurs harder (Gaussian kernel 5/1.8 → 7/2.8), the crisp pass
+  drops 0.9 → 0.45, and a 0.18 black scrim darkens the whole
+  effect; (b) the window now requests a REAL Windows backdrop
+  blur — acrylic (`SetWindowCompositionAttribute`,
+  ACCENT_ENABLE_ACRYLICBLURBEHIND, dark plum tint) behind the
+  bar's translucent pixels, plain blur-behind as fallback,
+  dynamically loaded. Neither can be seen from the build VM;
+  Jackson's Windows check is the proof for (b) especially.
+- **(7) Transparent symbol backgrounds — DONE in code.** The
+  panel fill is removed from both cell paints (coin cells and
+  context cells); borders, flash states and stale dimming are
+  unchanged, so the bar background shows through every symbol.
+
+Verification: core suite 455 → **477 checks, 0 failures**
+(includes the 22 new gate/marquee checks); MeterBar's suite
+985 → **989 checks, 0 failures** for its half. App layer,
+recorded honestly: the first full JUCE app build FAILED on a
+real error in this change — `MainComponent.cpp:957/1044:
+error: unable to deduce 'auto*' from
+'__gnu_cxx::__normal_iterator<std::unique_ptr<CellSplitter>*,
+...>::operator*()'` — the marquee blocks ranged over
+`splitters_` (a vector of unique_ptr) with `auto*`. Fixed to
+`auto&`; both edited translation units (MainComponent.cpp,
+Main.cpp) then pass a full syntax/type check against the
+JUCE headers with zero errors. A complete app link on the
+build VM was afterwards blocked by missing X11 extension
+dev headers (the VM was replaced mid-verification), so the
+Windows Actions build on push remains the full-build proof.
+Delivery state: committed locally — the 2026-10-31 push to
+main was blocked by the VM's egress proxy resetting SSH to
+GitHub; no release was cut. The visual items (2's feel, 3,
+6) are Jackson's to confirm on his machine.
+
 ## v0.3.2 (2026-10-29) — Vishona's follow-ups, via #crypto-book
 
 - **Coins fill the space when the context cells are hidden.**

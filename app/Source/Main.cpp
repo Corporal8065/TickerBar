@@ -2,6 +2,41 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
 #include <tickerbar/WindowGeom.hpp> // v0.3.0: startup position clamp (never restore off-screen)
+#if JUCE_WINDOWS
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+namespace {
+// v0.4.0 (Jackson's ask): a REAL backdrop blur for the bar window —
+// Windows acrylic (blur + a dark plum tint) behind the window's
+// translucent pixels, via the window-composition attribute. Loaded
+// dynamically so nothing new links; falls back to plain
+// blur-behind, and to nothing at all where unsupported (the painted
+// backgrounds are unchanged either way, so this is pure gain).
+struct AccentPolicy { int accentState; int accentFlags; unsigned int gradientColor; int animationId; };
+struct CompositionAttribData { int attribute; void* data; size_t sizeOfData; };
+void enableBackdropBlur(void* hwnd) {
+    if (hwnd == nullptr) return;
+    using SetWindowCompositionAttributeFn = BOOL(WINAPI*)(HWND, CompositionAttribData*);
+    auto* user32 = GetModuleHandleW(L"user32.dll");
+    auto fn = user32 != nullptr ? (SetWindowCompositionAttributeFn)GetProcAddress(user32, "SetWindowCompositionAttribute") : nullptr;
+    if (fn == nullptr) return;
+    AccentPolicy accent {};
+    accent.accentState = 4;                    // ACCENT_ENABLE_ACRYLICBLURBEHIND
+    accent.accentFlags = 2;
+    accent.gradientColor = 0xC4140d1cu;        // ABGR: dark plum tint, ~77% opaque
+    CompositionAttribData data {};
+    data.attribute = 19;                       // WCA_ACCENT_POLICY
+    data.data = &accent;
+    data.sizeOfData = sizeof(accent);
+    if (!fn((HWND)hwnd, &data)) {
+        accent.accentState = 3;                // ACCENT_ENABLE_BLURBEHIND
+        fn((HWND)hwnd, &data);
+    }
+}
+} // namespace
+#endif
 class MainWindow : public juce::DocumentWindow {
 public:
     explicit MainWindow(const juce::String& name) : juce::DocumentWindow(name, juce::Colour(0x00000000), 0) {
@@ -10,13 +45,15 @@ public:
         // Per-pixel transparent top level (MeterBar v0.13 pattern): the
         // window background is fully clear, so wherever the content
         // paints with alpha (the Background Opacity setting) the
-        // desktop shows through. Translucency only — no DWM blur.
+        // desktop shows through. v0.4.0: the desktop behind those
+        // pixels is now really blurred (acrylic, enableBackdropBlur
+        // below) instead of showing through sharp.
         setOpaque(false);
         auto* mc = new MainComponent();
         content = mc;
         setContentOwned(mc, true);
         setResizable(true, false);
-        setResizeLimits(mc->minimumBarWidth(), 92, 3840, 1200);
+        setResizeLimits(160, 48, 7680, 2160); // v0.4.0: free resize — Jackson's ask; overflow scrolls (marquee)
         // v0.3.0: clamp the restored rect into a visible work area —
         // a bar must never restore off-screen (SessionBar's field bug,
         // fixed family-wide; the pure rule is core WindowGeom).
@@ -32,6 +69,9 @@ public:
         }
         setAlwaysOnTop(mc->state.pinned);
         setVisible(true);
+#if JUCE_WINDOWS
+        if (auto* peer = getPeer()) enableBackdropBlur(peer->getNativeHandle()); // v0.4.0 acrylic backdrop
+#endif
     }
     void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
     // v0.2.0: the reserve machine is EVENT-driven — the window's own
@@ -48,7 +88,7 @@ private:
 class TickerBarApp : public juce::JUCEApplication {
 public:
     const juce::String getApplicationName() override { return "TickerBar"; }
-    const juce::String getApplicationVersion() override { return "0.3.2"; }
+    const juce::String getApplicationVersion() override { return "0.4.0"; }
     bool moreThanOneInstanceAllowed() override { return false; }
     void initialise(const juce::String&) override {
         // JUCE free-license attribution splash (MeterBar v0.15 pattern):
