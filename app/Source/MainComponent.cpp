@@ -22,15 +22,8 @@
 // install of the 0.5.0 Setup.exe had actually worked; the app was
 // misreporting its own version.
 static const juce::String kVersion = juce::String("v") + tickerbar::kVersionString;
-static juce::String dockEdgeName(tickerbar::DockEdge e) {
-    switch (e) {
-        case tickerbar::DockEdge::Top: return "Top";
-        case tickerbar::DockEdge::Bottom: return "Bottom";
-        case tickerbar::DockEdge::Left: return "Left";
-        case tickerbar::DockEdge::Right: return "Right";
-    }
-    return "Top";
-}
+// (dockEdgeName went with the Dock button at v0.6.0 — the edge is
+// picked by name in the Reposition submenu now.)
 
 // =====================================================================
 // Status dot — the feed honesty light: green live, amber stale, red down
@@ -834,38 +827,29 @@ MainComponent::MainComponent() {
     // "Reserve Screen Space" item. state.reserveScreenSpace itself
     // (and its settings key) is untouched, so a bar that had Reserve
     // on keeps it on.
-    reposBtn_.setTooltip("Reposition: dock edge, pin, move to another display - and Reserve Screen Space");
-    reposBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); showRepositionMenu(); };
+    // v0.6.0: the toolbar is icon-only. Reposition / Arrange /
+    // Restore / Presets / Stack / Dock / Minimize / Quit have no
+    // buttons any more — they are items in the burger Menu
+    // (showMainMenu), calling the same handlers; the tooltips below
+    // preserve the old buttons' hover text on the surviving glyphs.
     linkBtn_.setClickingTogglesState(true);
     linkBtn_.setToggleState(state.linkEnabled, juce::dontSendNotification);
     linkBtn_.setTooltip("Link: snap, drag, dock and share the background with the other family bars (MeterBar / SessionBar) when their Link is on too");
     linkBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); state.linkEnabled = linkBtn_.getToggleState(); saveSettings(); };
-    arrangeBtn_.setTooltip("Arrange: slide every other window on this monitor clear of the bar");
-    arrangeBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); doArrange(); };
-    restoreBtn_.setTooltip("Restore windows moved by Arrange");
-    restoreBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); doRestore(); };
-    presetBtn_.setTooltip("Presets: named full configurations - appearance, watchlist AND window position");
-    presetBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); showPresetMenu(); };
-    stackBtn_.setTooltip("Stack: turn Link on, snap this bar to its dock edge, and line every linked bar up flush against it as one block");
-    stackBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Sparkle); doStackAll(); };
-    dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
-    dockBtn_.setTooltip("Dock edge: click to cycle Top / Bottom / Left / Right - the bar snaps to that edge");
-    dockBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); cycleDockEdge(); };
+    settingsBtn_.setTooltip("Settings");
     settingsBtn_.onClick = [this]{
         uiClick(ClickSounds::Which::Pop);
         settingsWin_->content.build();
         settingsWin_->setVisible(true); settingsWin_->toFront(true);
     };
+    burgerBtn_.setTooltip("Menu: presets, arrange / restore windows, stack linked bars, reposition, minimize, quit");
+    burgerBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); showMainMenu(); };
     // v0.3.0 item 1: the update indicator starts hidden and lights
     // only when a check finds a newer release (MeterBar's pattern).
     updateBtn_.setVisible(false);
     updateBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop);
         if (pendingRelease_.ok && pendingRelease_.newer) showUpdatePanel(pendingRelease_); };
-    minBtn_.onClick = [this]{ if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-                                 if (auto* peer = w->getPeer()) peer->setMinimised(true); };
-    quitBtn_.onClick = []{ juce::JUCEApplication::getInstance()->systemRequestedQuit(); };
-    for (auto* b : { &linkBtn_, &arrangeBtn_, &restoreBtn_, &presetBtn_, &reposBtn_, &stackBtn_,
-                     &dockBtn_, &settingsBtn_, &updateBtn_, &minBtn_, &quitBtn_ }) addAndMakeVisible(b);
+    for (auto* b : { &linkBtn_, &settingsBtn_, &updateBtn_, &burgerBtn_ }) addAndMakeVisible(b);
     applyChrome();
     // v0.2.0 (k): family link wiring. Bounds are the WINDOW's (the bar
     // is the window); the background packet is the family style
@@ -1002,10 +986,9 @@ void MainComponent::resized() {
     // The control cluster, in MeterBar's order (item 11).
     struct BtnW { juce::TextButton* b; int w; };
     const BtnW cluster[] = {
-        { &linkBtn_, 52 }, { &arrangeBtn_, 76 }, { &restoreBtn_, 76 },
-        { &presetBtn_, 64 }, { &reposBtn_, 96 }, { &stackBtn_, 56 }, { &dockBtn_, 62 }, { &settingsBtn_, 72 },
-        { &updateBtn_, 68 }, { &minBtn_, 26 }, { &quitBtn_, 46 },
-    }; // v0.5.5: Reserve's 76 px left the row (it lives in the Reposition menu now); Reposition takes 96 px beside Preset, MeterBar's placement
+        { &linkBtn_, 40 }, { &settingsBtn_, 40 },
+        { &updateBtn_, 68 }, { &burgerBtn_, 40 },
+    }; // v0.6.0: icon-only cluster (the pre-v0.6.0 text row ran Link 52 | Arrange 76 | Restore 76 | Preset 64 | Reposition 96 | Stack 56 | Dock 62 | Settings 72 | Update! 68 | _ 26 | Quit 46 — all but Link/Settings/Update! live in the Menu now)
     auto btnVisible = [this](juce::TextButton* b) { return b != &updateBtn_ || updateAvailable_; };
     updateBtn_.setVisible(updateAvailable_);
     auto r = area.reduced(8, 6);
@@ -1572,7 +1555,6 @@ void MainComponent::settingsChanged(bool watchlistToo) {
     }
     if (linkBtn_.getToggleState() != state.linkEnabled)
         linkBtn_.setToggleState(state.linkEnabled, juce::dontSendNotification);
-    dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
     saveSettings();
     syncScreenSpace();
     syncFxPump();
@@ -1681,13 +1663,9 @@ void MainComponent::openDetail(const juce::String& symbol) {
     juce::CallOutBox::launchAsynchronously(std::move(detail), anchor, nullptr);
 }
 
-// v0.2.0: on-bar Dock button — cycle the preferred edge and snap.
-void MainComponent::cycleDockEdge() {
-    state.dockEdge = (tickerbar::DockEdge)(((int)state.dockEdge + 1) % 4);
-    dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
-    saveSettings();
-    snapToDockEdge();
-}
+// (The v0.2.0 on-bar Dock button — cycle the preferred edge and
+// snap — went at v0.6.0: the Reposition submenu's ticked edge
+// items are the same set-and-snap in direct form.)
 
 void MainComponent::snapToDockEdge() {
     auto* w = findParentComponentOfClass<juce::DocumentWindow>();
@@ -1844,8 +1822,7 @@ void MainComponent::applyChrome() {
     wordmark_.setColour(juce::Label::textColourId, theme_.accent);
     versionLabel_.setColour(juce::Label::textColourId, theme_.dim);
     statusLabel_.setColour(juce::Label::textColourId, theme_.dim);
-    for (auto* b : { &linkBtn_, &arrangeBtn_, &restoreBtn_, &presetBtn_, &reposBtn_, &stackBtn_,
-                     &dockBtn_, &settingsBtn_, &minBtn_, &quitBtn_ }) {
+    for (auto* b : { &linkBtn_, &settingsBtn_, &burgerBtn_ }) {
         b->setColour(juce::TextButton::buttonColourId, theme_.panel);
         b->setColour(juce::TextButton::buttonOnColourId, theme_.accent);
         b->setColour(juce::TextButton::textColourOffId, theme_.text);
@@ -1884,15 +1861,16 @@ void MainComponent::doStackAll() {
 // is a FULL configuration — window position included — and loading
 // one moves the bar (clamped on-screen via the core guard).
 // =====================================================================
+// --- the burger Menu (v0.6.0) — the compressed toolbar. Its two
+// submenus are the old standalone dropdowns, verbatim:
 // --- reposition dropdown (v0.5.5) — MeterBar's showRepositionMenu
 // ported (Jackson: "i like the drop down box you did for meter bar
 // can you add that to session and ticker?"), mapped item by item:
 //   MeterBar "At the Top" / "At the Bottom" -> the same two items,
 //     plus "At the Left" / "At the Right": this bar docks to all
 //     four edges (MeterBar's world has two), each ticked when it is
-//     the current dock edge. Picking one is cycleDockEdge's direct
-//     form: set the edge, refresh the Dock button's label, save,
-//     snap.
+//     the current dock edge. Picking one sets the edge, saves, and
+//     snaps (the retired Dock button cycled to the same place).
 //   MeterBar "Pin Above Other Windows" -> identical: state.pinned
 //     + setAlwaysOnTop + save.
 //   MeterBar "Move to Display" submenu -> identical shape; the
@@ -1907,48 +1885,29 @@ void MainComponent::doStackAll() {
 //     button is retired; the item toggles the same state through
 //     the same syncScreenSpace path, and the persisted setting is
 //     the same key, so an existing Reserve-on bar keeps it on.
-// Like MeterBar's menu, every action is deferred until the popup
-// has fully closed (its 2026-10-13 field lesson: moving the window
-// from inside the menu callback wedges it).
-void MainComponent::showRepositionMenu() {
-    enum { idTop = 1, idBottom, idLeft, idRight, idPin, idReserve, idDisplayBase = 100 };
+// Like MeterBar's menu, the Reposition (and Stack) actions are
+// deferred until the popup has fully closed (its 2026-10-13 field
+// lesson: moving the window from inside the menu callback wedges
+// it). One result space covers the whole menu tree, so the ids
+// below are unified (the old standalone menus each started at 1).
+enum { mnArrange = 1, mnRestore, mnStack, mnMinimize, mnQuit,
+       mnPresetNew = 10, mnPresetSave, mnPresetSaveAs, mnPresetFolder, mnPresetLoadBase = 1000,
+       mnEdgeTop = 20, mnEdgeBottom, mnEdgeLeft, mnEdgeRight, mnPin, mnReserve, mnDisplayBase = 2000 };
+juce::PopupMenu MainComponent::buildRepositionSubMenu() {
     juce::PopupMenu m;
     const int edge = (int)state.dockEdge;
-    m.addItem(idTop, "At the Top", true, edge == (int)tickerbar::DockEdge::Top);
-    m.addItem(idBottom, "At the Bottom", true, edge == (int)tickerbar::DockEdge::Bottom);
-    m.addItem(idLeft, "At the Left", true, edge == (int)tickerbar::DockEdge::Left);
-    m.addItem(idRight, "At the Right", true, edge == (int)tickerbar::DockEdge::Right);
-    m.addItem(idPin, "Pin Above Other Windows", true, state.pinned);
+    m.addItem(mnEdgeTop, "At the Top", true, edge == (int)tickerbar::DockEdge::Top);
+    m.addItem(mnEdgeBottom, "At the Bottom", true, edge == (int)tickerbar::DockEdge::Bottom);
+    m.addItem(mnEdgeLeft, "At the Left", true, edge == (int)tickerbar::DockEdge::Left);
+    m.addItem(mnEdgeRight, "At the Right", true, edge == (int)tickerbar::DockEdge::Right);
+    m.addItem(mnPin, "Pin Above Other Windows", true, state.pinned);
     m.addSeparator();
-    m.addItem(idReserve, "Reserve Screen Space", true, state.reserveScreenSpace);
+    m.addItem(mnReserve, "Reserve Screen Space", true, state.reserveScreenSpace);
     juce::PopupMenu disp;
     auto displays = juce::Desktop::getInstance().getDisplays().displays;
-    for (int i = 0; i < displays.size(); ++i) disp.addItem(idDisplayBase + i, "Display " + juce::String(i + 1));
+    for (int i = 0; i < displays.size(); ++i) disp.addItem(mnDisplayBase + i, "Display " + juce::String(i + 1));
     m.addSubMenu("Move to Display", disp);
-    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(reposBtn_), [this](int r) {
-        juce::MessageManager::callAsync([this, r] {
-            if (r >= idDisplayBase) { doMoveToDisplay(r - idDisplayBase); return; }
-            switch (r) {
-                case idTop: case idBottom: case idLeft: case idRight:
-                    state.dockEdge = (tickerbar::DockEdge)(r - idTop);
-                    dockBtn_.setButtonText(dockEdgeName(state.dockEdge));
-                    saveSettings();
-                    snapToDockEdge();
-                    break;
-                case idPin:
-                    state.pinned = !state.pinned;
-                    if (auto* w = findParentComponentOfClass<juce::DocumentWindow>()) w->setAlwaysOnTop(state.pinned);
-                    saveSettings();
-                    break;
-                case idReserve:
-                    state.reserveScreenSpace = !state.reserveScreenSpace;
-                    saveSettings();
-                    syncScreenSpace();
-                    break;
-                default: break;
-            }
-        });
-    });
+    return m;
 }
 void MainComponent::doMoveToDisplay(int idx) {
     auto displays = juce::Desktop::getInstance().getDisplays().displays;
@@ -1961,28 +1920,75 @@ void MainComponent::doMoveToDisplay(int idx) {
     snapToDockEdge(); // settle onto the current dock edge of the new display
 }
 
-void MainComponent::showPresetMenu() {
-    enum { idNew = 1, idSave, idSaveAs, idOpenFolder, idLoadBase = 100 };
+juce::PopupMenu MainComponent::buildPresetSubMenu(juce::Array<juce::File>& filesOut) {
     juce::PopupMenu m;
-    m.addItem(idNew, "New Preset (defaults)");
-    m.addItem(idSave, "Save", lastPresetName_.isNotEmpty());
-    m.addItem(idSaveAs, "Save As...");
-    m.addItem(idOpenFolder, "Open Preset Folder");
+    m.addItem(mnPresetNew, "New Preset (defaults)");
+    m.addItem(mnPresetSave, "Save", lastPresetName_.isNotEmpty());
+    m.addItem(mnPresetSaveAs, "Save As...");
+    m.addItem(mnPresetFolder, "Open Preset Folder");
     m.addSeparator();
-    auto files = presetio::listPresets();
-    for (int i = 0; i < files.size(); ++i) m.addItem(idLoadBase + i, files[i].getFileNameWithoutExtension());
-    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(presetBtn_), [this, files](int r) {
-        if (r == 1) {
+    filesOut = presetio::listPresets();
+    for (int i = 0; i < filesOut.size(); ++i) m.addItem(mnPresetLoadBase + i, filesOut[i].getFileNameWithoutExtension());
+    return m;
+}
+void MainComponent::showMainMenu() {
+    juce::PopupMenu m;
+    juce::Array<juce::File> presetFiles;
+    m.addSubMenu("Presets", buildPresetSubMenu(presetFiles));
+    m.addItem(mnArrange, "Arrange Windows");
+    m.addItem(mnRestore, "Restore Windows");
+    m.addItem(mnStack, "Stack Linked Bars");
+    m.addSubMenu("Reposition", buildRepositionSubMenu());
+    m.addSeparator();
+    m.addItem(mnMinimize, "Minimize");
+    m.addItem(mnQuit, "Quit");
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(burgerBtn_), [this, presetFiles](int r) {
+        // Preset actions run directly, as the old Preset dropdown's
+        // callback did.
+        if (r == mnPresetNew) {
             auto keepTheme = state.themeName;
             state = tickerbar::TickerState{};
             state.themeName = keepTheme;
             lastPresetName_.clear();
             settingsChanged(true);
         }
-        else if (r == 2) savePresetInteractive(false);
-        else if (r == 3) savePresetInteractive(true);
-        else if (r == 4) presetio::presetFolder().revealToUser();
-        else if (r >= 100 && r < 100 + files.size()) loadPresetFile(files[r - 100]);
+        else if (r == mnPresetSave) savePresetInteractive(false);
+        else if (r == mnPresetSaveAs) savePresetInteractive(true);
+        else if (r == mnPresetFolder) presetio::presetFolder().revealToUser();
+        else if (r >= mnPresetLoadBase && r < mnPresetLoadBase + presetFiles.size()) loadPresetFile(presetFiles[r - mnPresetLoadBase]);
+        else if (r == mnArrange) doArrange();
+        else if (r == mnRestore) doRestore();
+        else if (r == mnMinimize) { if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
+                                        if (auto* peer = w->getPeer()) peer->setMinimised(true); }
+        else if (r == mnQuit) juce::JUCEApplication::getInstance()->systemRequestedQuit();
+        else if (r == mnStack || (r >= mnEdgeTop && r <= mnReserve) || r >= mnDisplayBase) {
+            // Stack + every Reposition action defer until the popup
+            // has fully closed — the old dropdown's discipline.
+            juce::MessageManager::callAsync([this, r] {
+                if (r >= mnDisplayBase) { doMoveToDisplay(r - mnDisplayBase); return; }
+                switch (r) {
+                    case mnEdgeTop: case mnEdgeBottom: case mnEdgeLeft: case mnEdgeRight:
+                        state.dockEdge = (tickerbar::DockEdge)(r - mnEdgeTop);
+                        saveSettings();
+                        snapToDockEdge();
+                        break;
+                    case mnPin:
+                        state.pinned = !state.pinned;
+                        if (auto* w = findParentComponentOfClass<juce::DocumentWindow>()) w->setAlwaysOnTop(state.pinned);
+                        saveSettings();
+                        break;
+                    case mnReserve:
+                        state.reserveScreenSpace = !state.reserveScreenSpace;
+                        saveSettings();
+                        syncScreenSpace();
+                        break;
+                    case mnStack:
+                        doStackAll();
+                        break;
+                    default: break;
+                }
+            });
+        }
     });
 }
 void MainComponent::savePresetInteractive(bool saveAs) {

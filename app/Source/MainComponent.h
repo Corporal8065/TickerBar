@@ -47,9 +47,13 @@ private:
 // The bar itself: a MeterBar-style TOP TOOLBAR STRIP (v0.3.0 — the
 // v0.2.1 cluster sat vertically centred mid-bar; Jackson's field
 // report) holding wordmark + version + status on the left and the
-// control cluster on the right in MeterBar's order:
-// Reserve | Link | Arrange | Restore | Preset | Stack | Dock |
-// Settings | Update! | _ | Quit. Below it, one cell per watched coin
+// control cluster on the right. v0.6.0: the cluster is ICON-ONLY —
+// Link | Settings | Update! | Menu (☰) — and Presets, Arrange,
+// Restore, Stack, Reposition, Minimize and Quit live in the Menu.
+// (The pre-v0.6.0 text cluster ran Link | Arrange | Restore |
+// Preset | Reposition | Stack | Dock | Settings | Update! | _ |
+// Quit; Reserve had already moved into Reposition at v0.5.5.)
+// Below the strip, one cell per watched coin
 // plus the context cells and (Anime theme) the mascot. Borderless
 // and always-on-top (state.pinned); drag any non-interactive surface
 // to move it; drag a coin cell sideways to reorder it (v0.3.0);
@@ -94,7 +98,6 @@ public:
     void rebuildSettingsDeferred();
     void notifyWindowGeometryChanged(); // MainWindow moved/resized feed (reserve-machine events, v0.2.0)
     int minimumBarWidth() const;        // supported-width floor: every cell's % fully visible (Layout.hpp)
-    void cycleDockEdge();               // the on-bar Dock button: Top -> Bottom -> Left -> Right
     void snapToDockEdge();
     void doArrange();
     void doRestore();
@@ -129,12 +132,16 @@ private:
     void showUpdatePanel(const tbupdate::ReleaseInfo& r);
     void showPrivateRepoFallback(const juce::String& detail);
     void startUpdateDownload();
-    // presets (v0.3.0 item 2)
-    void showPresetMenu();
-    // reposition dropdown (v0.5.5): MeterBar's showRepositionMenu
-    // ported — dock edges, pin, move-to-display, and (Jackson's
-    // ask) the Reserve toggle that used to be a standalone button.
-    void showRepositionMenu();
+    // v0.6.0: the burger Menu — holds the compressed toolbar:
+    // the Presets submenu (v0.3.0 item 2), Arrange / Restore /
+    // Stack items, the Reposition submenu (the v0.5.5 dropdown —
+    // dock edges, pin, move-to-display, and the Reserve toggle),
+    // then Minimize / Quit. The builders reproduce the old
+    // standalone menus verbatim; showMainMenu's callback handles
+    // the unified item ids.
+    void showMainMenu();
+    juce::PopupMenu buildPresetSubMenu(juce::Array<juce::File>& filesOut);
+    juce::PopupMenu buildRepositionSubMenu();
     void doMoveToDisplay(int idx);
     void savePresetInteractive(bool saveAs);
     void loadPresetFile(const juce::File& f);
@@ -182,10 +189,11 @@ private:
     std::unique_ptr<TickerSettingsWindow> settingsWin_;
 
     juce::Label wordmark_, versionLabel_, statusLabel_;
-    juce::TextButton linkBtn_ { "Link" }, arrangeBtn_ { "Arrange" },
-                     restoreBtn_ { "Restore" }, presetBtn_ { "Preset" }, reposBtn_ { "Reposition" }, stackBtn_ { "Stack" },
-                     dockBtn_ { "Top" }, settingsBtn_ { "Settings" }, updateBtn_ { "Update!" },
-                     minBtn_ { "_" }, quitBtn_ { "Quit" };
+    // v0.6.0: icon-only cluster (see the class comment). The
+    // Update! indicator stays text on purpose — it is temporary
+    // and must be unmissable.
+    juce::TextButton linkBtn_ { "🔗" }, settingsBtn_ { "⚙" }, burgerBtn_ { "☰" },
+                     updateBtn_ { "Update!" };
     juce::ComponentDragger dragger_;
     juce::Rectangle<int> lastSavedBounds_;
     juce::Rectangle<float> dotRect_ { 14.f, 10.f, 10.f, 10.f }; // status dot (painted; set by resized)
