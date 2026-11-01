@@ -808,6 +808,36 @@ MainComponent::MainComponent() {
         state.windowH = juce::jlimit(52, 1200, state.windowH + 30);
         state.uiVer = 3;
     }
+    // v0.6.1 heal (Jackson's field report: BTC dominance stuck
+    // huge): explicit widths stored by the pre-cap solver era —
+    // before v0.5.9 capped solveCellWidths, an explicit width
+    // could balloon to thousands of px — are honoured verbatim by
+    // every reader except the layout clamps, so the raw store
+    // stayed poisoned (the Sizes panel readout sat outside its
+    // own slider band; the marquee strip carried a 600 px cell).
+    // Clamp every stored explicit width into its store's writable
+    // band once, here at load, and persist when anything moved.
+    // 0 keeps its meaning (unset / auto) in both stores. Context
+    // widths use their exact drag band [kContextCellMin,
+    // kContextCellMax]; coin widths clamp at the same 600 ceiling
+    // with the floor left at 56 — the vertical drag path's own
+    // floor (adjustPairWidths is called with 56 in vertical
+    // mode), so a legitimately dragged 56-89 px vertical width is
+    // NOT rewritten; only the ballooned top end heals.
+    {
+        bool healed = false;
+        for (auto& kv : state.cellWidths) {
+            if (kv.second <= 0) continue;
+            const int c = juce::jlimit(56, tickerbar::kSymbolCellMaxW, kv.second);
+            if (c != kv.second) { kv.second = c; healed = true; }
+        }
+        for (int* w : { &state.fngCellWidth, &state.domCellWidth }) {
+            if (*w <= 0) continue;
+            const int c = juce::jlimit(tickerbar::kContextCellMin, tickerbar::kContextCellMax, *w);
+            if (c != *w) { *w = c; healed = true; }
+        }
+        if (healed) saveSettings();
+    }
     theme_ = themeByName(state.themeName);
     setOpaque(false); // the window is non-opaque too: Background Opacity shows the desktop through
     setTooltip("TickerBar - prices are spot prices (Coinbase Exchange / CoinGecko)");
@@ -844,6 +874,9 @@ MainComponent::MainComponent() {
     };
     burgerBtn_.setTooltip("Menu: presets, arrange / restore windows, stack linked bars, reposition, minimize, quit");
     burgerBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop); showMainMenu(); };
+    // v0.6.1: the glyph buttons wear the emoji typeface (see
+    // IconButtonLookAndFeel) — everything else keeps the stock font.
+    for (auto* b : { &linkBtn_, &settingsBtn_, &burgerBtn_ }) b->setLookAndFeel(&iconLnf_);
     // v0.3.0 item 1: the update indicator starts hidden and lights
     // only when a check finds a newer release (MeterBar's pattern).
     updateBtn_.setVisible(false);
@@ -1235,6 +1268,8 @@ void MainComponent::positionStrip() {
     auto items = stripItems();
     const int gap = 16, off = (int)std::floor(marqueeOffset_);
     const int nCoins = (int)cells_.size();
+    const bool showF = state.showFearGreed && fngCell_ != nullptr;
+    const bool showD = state.showBtcDominance && domCell_ != nullptr;
     int base = 0, idx = 0;
     for (auto& it : items) {
         const int rel = tickerbar::marqueePosition(base, it.extent, off, marqueeCycle_);
@@ -1248,6 +1283,27 @@ void MainComponent::positionStrip() {
             else sp->setBounds(stripRect_.getX() + srel, stripRect_.getY(), 10, stripRect_.getHeight());
             sp->setVisible(true);
         }
+        // v0.6.1: the CONTEXT dividers ride the scroll too — the
+        // v0.5.4 fix above restored only the coin pairs, and
+        // resized() hides both context splitters for the marquee,
+        // so in an overflowing strip the F&G / BTC-dominance cells
+        // could not be dragged at all (Jackson's field report).
+        // Same core math, placed in the gap after their left item:
+        // A on the boundary after the LAST coin (its pair partner
+        // is the nearest context cell), B after the F&G item.
+        // Their drag path (onContextSplitterDrag) reads the strip
+        // extents straight off the components and holds the scroll
+        // via splitterDragBegin, exactly like the coin pairs.
+        auto placeCtx = [&](CellSplitter* sp) {
+            if (sp == nullptr) return;
+            const int srel = tickerbar::marqueeSplitterRel(rel, it.extent, gap, 10);
+            sp->verticalBar = vertical_;
+            if (vertical_) sp->setBounds(stripRect_.getX(), stripRect_.getY() + srel, stripRect_.getWidth(), 10);
+            else sp->setBounds(stripRect_.getX() + srel, stripRect_.getY(), 10, stripRect_.getHeight());
+            sp->setVisible(true);
+        };
+        if (idx == nCoins - 1 && nCoins > 0 && (showF || showD)) placeCtx(ctxSplitA_.get());
+        if (idx == nCoins && showF && showD) placeCtx(ctxSplitB_.get());
         base += it.extent + gap;
         ++idx;
     }
