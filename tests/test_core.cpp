@@ -1037,9 +1037,11 @@ int main() {
         // this out of the app; the solver never shrinks a drag)
         auto fo = solveCellWidths(500, 16, {200, 200, 200}, 90);
         CHECK(fo[0] == 200 && fo[1] == 200 && fo[2] == 200);
-        // a single explicit cell fills the whole strip
+        // a single explicit cell fills the strip — v0.5.9: only up
+        // to the kSymbolCellMaxW cap (600); the remaining 200 px of
+        // this 800 px strip stay unallocated (see the cap block)
         auto f1 = solveCellWidths(800, 16, {300}, 90);
-        CHECK(f1.size() == 1 && f1[0] == 800);
+        CHECK(f1.size() == 1 && f1[0] == 600);
         // mixed explicit/auto still shares the rest (pre-v0.3.2 rule)
         auto fm = solveCellWidths(1000, 16, {200, 0, 200}, 90);
         CHECK(fm[0] == 200 && fm[1] == 568 && fm[2] == 200);
@@ -1068,6 +1070,41 @@ int main() {
         TickerState d2;
         resetLayoutToDefaults(d2);
         CHECK(d2.watchlist == TickerState{}.watchlist && d2.cellWidths.empty());
+    }
+    // ---------- v0.5.9: solver cap — no solver-grown cell past 600 ----------
+    {
+        // auto share capped: two auto cells on a very wide strip
+        // would split 3984 evenly (1992 each) uncapped
+        auto cap = solveCellWidths(4000, 16, {0, 0}, 90);
+        CHECK(cap[0] == kSymbolCellMaxW && cap[1] == kSymbolCellMaxW);
+        CHECK(cap[0] + cap[1] + 16 < 4000); // leftover stays unallocated
+        // auto share + rounding remainder capped: 1201 over two
+        // autos is 600 each + a 1 px remainder — the remainder may
+        // NOT push the last auto past the cap
+        auto capr = solveCellWidths(1217, 16, {0, 0}, 90);
+        CHECK(capr[0] == kSymbolCellMaxW && capr[1] == kSymbolCellMaxW);
+        // mixed: explicit stands, the auto share of the rest is capped
+        auto capm = solveCellWidths(4000, 16, {200, 0, 0}, 90);
+        CHECK(capm[0] == 200 && capm[1] == kSymbolCellMaxW && capm[2] == kSymbolCellMaxW);
+        // all-explicit last-cell fill capped: the fill would take
+        // the last cell to 1568 uncapped
+        auto capf = solveCellWidths(2000, 16, {200, 200, 200}, 90);
+        CHECK(capf[0] == 200 && capf[1] == 200 && capf[2] == kSymbolCellMaxW);
+        // an explicit width ABOVE the cap keeps its existing
+        // behaviour: it stands, and the fill adds nothing to it
+        auto capx = solveCellWidths(1000, 16, {800}, 90);
+        CHECK(capx.size() == 1 && capx[0] == 800);
+        // an under-cap fill still fills exactly (v0.3.2 behaviour)
+        auto capu = solveCellWidths(1000, 16, {200, 200, 200}, 90);
+        CHECK(capu[2] == 568 && capu[0] + capu[1] + capu[2] + 2 * 16 == 1000);
+        // min behaviour unchanged: a too-narrow strip still floors
+        // every auto cell at minW (the solver may overflow, as before)
+        auto capn = solveCellWidths(200, 16, {0, 0, 0}, 90);
+        CHECK(capn[0] == 90 && capn[1] == 90 && capn[2] == 90);
+        // pair-drag + trailing-divider math untouched by the cap
+        auto capp = adjustPairWidths(200, 200, 50, 80);
+        CHECK(capp.first == 250 && capp.second == 150);
+        CHECK(trailingWindowExtent(1000, 9999, 600, 7680) == 7680);
     }
 
     // ---------- v0.5.3: single-source version (generated header) ----------

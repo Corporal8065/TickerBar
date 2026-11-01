@@ -579,7 +579,7 @@ public:
             note("Layout only: every cell shown again, all dragged cell widths forgotten, coin order back to BTC / ETH / HYPE. Your coins, alerts, theme and poll settings are kept.");
         });
         panel("Sizes", [&]{
-            note("One slider per coin - the same widths the dividers on the bar drag, so the two always agree. Applies live, whether the bar is scrolling or still. A coin with no width set shares the space automatically (auto).");
+            note("One slider per coin, plus the two context cells - the same widths the dividers on the bar drag, so the two always agree. Applies live, whether the bar is scrolling or still. A cell with no width set shares the space automatically (auto).");
             for (auto& sym : st->watchlist) {
                 const int stored = owner->symbolCellWidth(sym);
                 auto* l = add(new juce::Label({}, juce::String(sym)));
@@ -601,7 +601,34 @@ public:
                 };
                 y_ += 26;
             }
-            button("Reset all coin widths to auto", [this]{ owner->resetSymbolCellWidths(); });
+            // v0.5.9: the two context cells get rows too — the same
+            // state fields (fngCellWidth / domCellWidth) the divider
+            // beside each context cell drags, so panel and dividers
+            // agree here as well. Stored 0 = the default extent.
+            for (auto& cx : { std::pair<const char*, bool>{ "Fear & Greed cell", true },
+                              std::pair<const char*, bool>{ "BTC dominance cell", false } }) {
+                const bool fng = cx.second;
+                const int stored = owner->contextCellWidth(fng);
+                auto* l = add(new juce::Label({}, juce::String(cx.first)));
+                l->setFont(juce::Font(12.5f, juce::Font::bold));
+                l->setColour(juce::Label::textColourId, settingsPalette::text());
+                l->setBounds(24, y_, 150, 22);
+                auto* s = add(new juce::Slider());
+                s->setRange(tickerbar::kContextCellMin, tickerbar::kContextCellMax, 1.0);
+                s->setValue(stored > 0 ? stored : tickerbar::kContextCellDefaultW, juce::dontSendNotification);
+                s->setBounds(182, y_, 300, 22);
+                auto* ro = add(new juce::Label({}, stored > 0 ? juce::String(stored) + " px" : juce::String("auto")));
+                ro->setFont(11.f);
+                ro->setColour(juce::Label::textColourId, settingsPalette::dimText());
+                ro->setBounds(492, y_, 90, 22);
+                s->onValueChange = [this, s, ro, fng]{
+                    const int px = (int)(s->getValue() + 0.5);
+                    owner->setContextCellWidth(fng, px);
+                    ro->setText(juce::String(px) + " px", juce::dontSendNotification);
+                };
+                y_ += 26;
+            }
+            button("Reset all cell widths to auto", [this]{ owner->resetSymbolCellWidths(); });
         });
         panel("Alerts", [&]{
             toggle("Soft click sound on a cross (default off)", st->alertSound, [&](bool b){ st->alertSound = b; });
@@ -1573,9 +1600,27 @@ void MainComponent::setSymbolCellWidth(const std::string& symbol, int px) {
 }
 void MainComponent::resetSymbolCellWidths() {
     state.cellWidths.clear();
+    state.fngCellWidth = 0; // v0.5.9: the reset covers the context widths too
+    state.domCellWidth = 0;
     saveSettings();
     resized();
     rebuildSettingsDeferred(); // the sheet's sliders/readouts re-read the cleared store
+}
+// v0.5.9: the Settings > Sizes panel's read/write path into the
+// context cells' stored extents — the same fngCellWidth /
+// domCellWidth fields the divider beside each context cell writes
+// (splitter drag path above). The write tail mirrors the coin
+// setter: persist, then reflow. Stored values live in the same
+// band contextCellExtent clamps to at layout time.
+int MainComponent::contextCellWidth(bool fng) const {
+    return fng ? state.fngCellWidth : state.domCellWidth;
+}
+void MainComponent::setContextCellWidth(bool fng, int px) {
+    const int clamped = px < tickerbar::kContextCellMin ? tickerbar::kContextCellMin
+                      : (px > tickerbar::kContextCellMax ? tickerbar::kContextCellMax : px);
+    (fng ? state.fngCellWidth : state.domCellWidth) = clamped;
+    saveSettings();
+    resized();
 }
 
 // v0.5.6: "Link background" flipped in Settings. Turning it ON

@@ -87,7 +87,9 @@ public:
     void resetLayoutToDefaults();       // v0.3.2: Settings button — layout fields only (core resetLayoutToDefaults)
     int  symbolCellWidth(const std::string& symbol) const; // v0.5.6: Sizes panel read — stored explicit width, 0 = auto
     void setSymbolCellWidth(const std::string& symbol, int px); // v0.5.6: Sizes panel write — the SAME cellWidths store the dividers drag
-    void resetSymbolCellWidths();       // v0.5.6: Sizes panel reset — every symbol back to auto width
+    void resetSymbolCellWidths();       // v0.5.6: Sizes panel reset — every symbol back to auto width (v0.5.9: context widths too)
+    int  contextCellWidth(bool fng) const; // v0.5.9: Sizes panel read — stored fng/dom cell width, 0 = default extent
+    void setContextCellWidth(bool fng, int px); // v0.5.9: Sizes panel write — the SAME fng/dom fields the context dividers drag
     void onBgLinkToggled();             // v0.5.6: Settings "Link background" flipped — re-stamp for peers when it turns on
     void rebuildSettingsDeferred();
     void notifyWindowGeometryChanged(); // MainWindow moved/resized feed (reserve-machine events, v0.2.0)

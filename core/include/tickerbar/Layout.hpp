@@ -76,6 +76,16 @@ inline int fullCoinCellWidth(int symbolTextW, int pctTextW) {
 // of a pair) left the remainder unassigned: dead space right of
 // the last cell, worst after the context cells were hidden and
 // freed their width (Vishona's v0.3.1 field report).
+// v0.5.9: the auto share and the all-explicit last-cell fill are
+// CAPPED at kSymbolCellMaxW — on a wide bar the uncapped share
+// made some boxes extremely wide (Jackson's field report).
+// Leftover space past the cap stays unallocated: callers place
+// cells from the left, so the strip simply ends early. Explicit
+// widths themselves are NOT capped — a dragged/stored width keeps
+// its existing behaviour; only what the solver ADDS is capped.
+// (Declared here rather than in the SYMBOL CELL WIDTHS section
+// below because the solver needs it; the value is unchanged.)
+inline constexpr int kSymbolCellMaxW = 600; // == kContextCellMax
 inline std::vector<int> solveCellWidths(int total, int gap, const std::vector<int>& explicitW, int minW) {
     const int n = (int)explicitW.size();
     std::vector<int> out((size_t)n, 0);
@@ -91,12 +101,20 @@ inline std::vector<int> solveCellWidths(int total, int gap, const std::vector<in
         int rest = avail - fixedSum;
         int each = rest / autos;
         if (each < minW) each = minW;
+        if (each > kSymbolCellMaxW) each = kSymbolCellMaxW; // v0.5.9 cap
         int lastAuto = -1;
         for (int i = 0; i < n; ++i) if (explicitW[(size_t)i] <= 0) { out[(size_t)i] = each; lastAuto = i; }
         const int remainder = (avail - fixedSum) - each * autos;
-        if (lastAuto >= 0 && remainder > 0) out[(size_t)lastAuto] += remainder;
+        if (lastAuto >= 0 && remainder > 0) {
+            out[(size_t)lastAuto] += remainder;
+            if (out[(size_t)lastAuto] > kSymbolCellMaxW) out[(size_t)lastAuto] = kSymbolCellMaxW; // v0.5.9 cap
+        }
     } else if (fixedSum < avail) {
-        out[(size_t)n - 1] += avail - fixedSum; // all explicit, room to spare: the last cell fills it
+        // all explicit, room to spare: the last cell fills it — but
+        // only up to the cap (v0.5.9); a last cell already at/above
+        // the cap (an explicit width, which stands) gains nothing.
+        const int room = kSymbolCellMaxW - out[(size_t)n - 1];
+        if (room > 0) out[(size_t)n - 1] += std::min(avail - fixedSum, room);
     }
     return out;
 }
@@ -135,7 +153,8 @@ inline std::pair<int, int> adjustPairWidths(int w1, int w2, int delta, int minW)
 // for a dragged cell extent; the coin machinery itself has no max,
 // so the panel reuses that one rather than inventing a new number.
 inline constexpr int kSymbolCellMinW = 90;
-inline constexpr int kSymbolCellMaxW = 600; // == kContextCellMax
+// kSymbolCellMaxW (600, == kContextCellMax) is declared above
+// solveCellWidths — the solver's v0.5.9 cap uses the same ceiling.
 inline int clampSymbolCellWidth(int w) {
     return w < kSymbolCellMinW ? kSymbolCellMinW : (w > kSymbolCellMaxW ? kSymbolCellMaxW : w);
 }
