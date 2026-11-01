@@ -46,7 +46,7 @@ public:
     std::function<int()> getDockedEdge;                    // protocol ordinal or -1
     std::function<bool()> isLinked;
     std::function<bool()> bgLinkEnabled; // v0.5.6: the host's "Link background" toggle; empty = enabled
-    std::function<void(float out[4])> getAudio; // v0.3.0 item 17: band energies [low,mid,high] + level (MeterBar wires this; the others leave it empty)
+    std::function<void(float out[5])> getAudio; // BLK5 (v0.6.5): + stereo balance at [4] // v0.3.0 item 17: band energies [low,mid,high] + level (MeterBar wires this; the others leave it empty)
 
     explicit BarLinkClient(int appId) : appId_(appId) {}
     ~BarLinkClient() override { stop(); }
@@ -138,7 +138,7 @@ public:
     }
 
     // v0.3.0 item 17: a peer's audio broadcast (false = not live / never published).
-    bool peerAudio(int appId, float out[4]) {
+    bool peerAudio(int appId, float out[5]) {
         if (!shared_ || appId < 0 || appId > 2) return false;
         tickerbar::LinkShared snap;
         if (!readShared(snap)) return false;
@@ -203,12 +203,14 @@ private:
         mine.dockedEdge = getDockedEdge ? getDockedEdge() : -1;
         // Item 17: audio broadcast — re-stamp only on material change.
         if (getAudio) {
-            float a[4] = { 0.f, 0.f, 0.f, 0.f };
+            float a[5] = { 0.f, 0.f, 0.f, 0.f, 0.f };
             getAudio(a);
             auto diff = [](float x, float y) { return x > y ? x - y : y - x; };
             if (diff(a[0], mine.audioLow) > 0.01f || diff(a[1], mine.audioMid) > 0.01f ||
-                diff(a[2], mine.audioHigh) > 0.01f || diff(a[3], mine.audioLevel) > 0.01f) {
+                diff(a[2], mine.audioHigh) > 0.01f || diff(a[3], mine.audioLevel) > 0.01f ||
+                diff(a[4], mine.audioBalance) > 0.02f) {
                 mine.audioLow = a[0]; mine.audioMid = a[1]; mine.audioHigh = a[2]; mine.audioLevel = a[3];
+                mine.audioBalance = a[4];
                 mine.audioSeq += 1;
             }
         }

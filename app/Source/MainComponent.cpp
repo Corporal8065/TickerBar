@@ -674,7 +674,7 @@ public:
             note("Data colours drive the gain/loss text and the sparklines. Family = the theme's own green/red; the others are pairs of stops from MeterBar's colour maps.");
             combo("Background effect", {"Styled background", "Visualizer particles", "Reactive glow"}, st->bgEffect,
                   [&](int v){ st->bgEffect = v; });
-            combo("Visualizer style", {"Bubbles (particles)", "Lines (flowing ribbons)"}, st->vizStyle,
+            combo("Visualizer style", {"Bubbles (particles)", "Lines (flowing ribbons)", "Field (wandering vortices)"}, st->vizStyle,
                   [&](int v){ st->vizStyle = v; }); // v0.5.8: Jackson's second style, beside the effect choice
             toggle("Link background (share style, opacity and effect with linked bars)", st->linkBackground,
                    [&](bool b){ st->linkBackground = b; owner->onBgLinkToggled(); });
@@ -909,13 +909,14 @@ MainComponent::MainComponent() {
             w->setBounds(safe.x, safe.y, safe.w, safe.h);
         }
     };
-    linkClient_.getBg = [this]{ return BarLinkClient::Bg{ (int)state.backgroundStyle, state.backgroundOpacity, state.bgEffect == 1 ? (state.vizStyle == 1 ? 3 : 1) : state.bgEffect }; }; // BLK4: the visualizer style rides the effect ordinal (1 Bubbles / 3 Lines)
+    linkClient_.getBg = [this]{ return BarLinkClient::Bg{ (int)state.backgroundStyle, state.backgroundOpacity, state.bgEffect == 1 ? (state.vizStyle == 1 ? 3 : state.vizStyle == 2 ? 4 : 1) : state.bgEffect }; }; // BLK4: the visualizer style rides the effect ordinal (1 Bubbles / 3 Lines); BLK5 (v0.6.5): 4 = Field
     linkClient_.applyBg = [this](const BarLinkClient::Bg& bg){
         state.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 3, bg.style);
         state.backgroundOpacity = juce::jlimit(0.05f, 1.0f, bg.opacity);
         // BLK4: effect 3 = the visualizer with the Lines style,
         // effect 1 = the visualizer with Bubbles; 0/2 as before.
         if (bg.effect == 3) { state.bgEffect = 1; state.vizStyle = 1; }
+        else if (bg.effect == 4) { state.bgEffect = 1; state.vizStyle = 2; } // BLK5: Field
         else if (bg.effect == 1) { state.bgEffect = 1; state.vizStyle = 0; }
         else state.bgEffect = juce::jlimit(0, 2, bg.effect);
         saveSettings(); repaint(); syncFxPump(); // an adopted visualizer/glow must actually start (or stop)
@@ -2283,15 +2284,16 @@ void MainComponent::stepFx() {
     const float dt = 1.f / 30.f;
     fxClock_ += dt;
     float bands[3] = { 0.f, 0.f, 0.f }, level = 0.f;
-    float pkt[4];
+    float pkt[5];
+    float balance = 0.f; // v0.6.5: MeterBar's stereo balance steers the distributed emitters
     if (state.linkEnabled && linkClient_.peerAudio(tickerbar::kLinkAppMeter, pkt)) {
-        bands[0] = pkt[0]; bands[1] = pkt[1]; bands[2] = pkt[2]; level = pkt[3];
+        bands[0] = pkt[0]; bands[1] = pkt[1]; bands[2] = pkt[2]; level = pkt[3]; balance = pkt[4];
     } else {
         tickerbar::ambientBands(fxClock_, bands, level);
     }
     // v0.5.8: advance whichever visualizer style is selected —
     // the particle engine (Bubbles) or the ribbon model (Lines).
-    if (state.bgEffect == 1) { if (state.vizStyle == 1) vizLines_.update(dt, bands); else viz_.update(dt, bands, vizSettings()); }
+    if (state.bgEffect == 1) { if (state.vizStyle == 1) vizLines_.update(dt, bands); else if (state.vizStyle == 2) vizField_.update(dt, bands, vizSettings(), balance); else viz_.update(dt, bands, vizSettings(), balance); }
     else if (state.bgEffect == 2) glow_.update(dt, bands, level);
     if (mascot_ && mascot_->isVisible()) {
         const long long now = juce::Time::currentTimeMillis();
@@ -2367,6 +2369,18 @@ void MainComponent::drawVisualizerBackground(juce::Graphics& g) {
                     ig.setColour(juce::Colour(c.r, c.g, c.b).withAlpha(alpha * 0.85f));
                     ig.fillPath(path);
                 }
+            }
+        } else if (state.vizStyle == 2) {
+            // v0.6.5 FIELD: the vortex dots, drawn through the
+            // exact same dot path (and blur envelope) as Bubbles.
+            for (auto& pt : vizField_.particles()) {
+                auto c = vizField_.colorFor(pt, vs);
+                ig.setColour(juce::Colour(c.r, c.g, c.b));
+                float px, py;
+                tickerbar::fieldToLocal(fm, pt.x, pt.y, px, py);
+                const float r = pt.size * 1.35f;
+                if (!tickerbar::fieldDotVisible(px, py, r, iw, ih)) continue; // another bar's slice of the field
+                ig.fillEllipse(px - r, py - r, r * 2.f, r * 2.f);
             }
         } else {
             for (auto& pt : viz_.particles()) {

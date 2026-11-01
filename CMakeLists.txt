@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.22)
 # stale at 0.4.0 and every later build reported 0.4.0 to the updater
 # (Fiona's stuck-on-0.4.0 report); do not add another copy. Bump it
 # here, only here. (MeterBar made this move at its v0.19.)
-project(TickerBar VERSION 0.6.4 LANGUAGES C CXX)
+project(TickerBar VERSION 0.6.5 LANGUAGES C CXX)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/app/TickerBarVersion.h.in
                ${CMAKE_BINARY_DIR}/generated/TickerBarVersion.h)
 # Static MSVC runtime (/MT) so a built TickerBar.exe runs on a friend's

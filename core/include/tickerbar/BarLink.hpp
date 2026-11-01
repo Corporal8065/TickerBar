@@ -30,7 +30,7 @@ namespace tickerbar {
 // A drag session is "live" while its stamp is fresher than
 // kLeaderStaleMs; staleness — never a stuck flag — ends it.
 
-inline constexpr unsigned kLinkMagic = 0x424C4B34; // "BLK4" — v0.5.8 widened the bgEffect value
+inline constexpr unsigned kLinkMagic = 0x424C4B35; // "BLK5" — v0.5.8 widened the bgEffect value
     // domain (3 = visualizer Lines; see LinkSlot::bgEffect). The slot
     // layout is BLK3's, but the effect ordinal's MEANING grew, so the
     // magic moves with it: mixed old/new binaries never link (magic
@@ -71,7 +71,8 @@ struct LinkSlot {
     unsigned audioSeq = 0;
     // Background effect (BLK3, v0.5.6; domain widened by BLK4,
     // v0.5.8): the publisher's bgEffect ordinal — 0 styled,
-    // 1 visualizer Bubbles, 2 glow, 3 visualizer Lines. The
+    // 1 visualizer Bubbles, 2 glow, 3 visualizer Lines, 4 visualizer
+    // Field (BLK5, v0.6.5). The
     // visualizer STYLE rides this ordinal (rather than a new
     // field) so the style propagates exactly the way the effect
     // selection already does. MeterBar has no glow and no 3-way
@@ -80,6 +81,12 @@ struct LinkSlot {
     // that style (2 lands as visualizer-on, style untouched).
     // Appended last, like every field since BLK1.
     int bgEffect = 0;
+    // Stereo balance (BLK5, v0.6.5): MeterBar publishes its
+    // StereoFrame balance here (positive = right-heavy) beside
+    // the band energies above, so linked siblings place their
+    // distributed emitters by the same stereo picture. Appended
+    // last, like every field since BLK1.
+    float audioBalance = 0.f;
 };
 struct LinkShared {
     unsigned magic = kLinkMagic;
@@ -260,9 +267,10 @@ inline int planStackAll(const LinkShared& sh, long long nowMs, int initiatorApp,
 // published at least once (audioSeq != 0); freshness is slotLive's
 // heartbeat rule — exactly the "MeterBar is running and linked"
 // test the reactive background wants.
-inline bool audioPacket(const LinkSlot& s, long long nowMs, float out[4]) {
+inline bool audioPacket(const LinkSlot& s, long long nowMs, float out[5]) {
     if (!slotLive(s, nowMs) || s.audioSeq == 0) return false;
     out[0] = s.audioLow; out[1] = s.audioMid; out[2] = s.audioHigh; out[3] = s.audioLevel;
+    out[4] = s.audioBalance; // BLK5 (v0.6.5)
     return true;
 }
 

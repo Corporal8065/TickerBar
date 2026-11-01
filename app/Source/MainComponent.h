@@ -250,6 +250,7 @@ private:
     FxPump fxPump_;
     tickerbar::VisualizerEngine viz_;
     tickerbar::VisualizerLines vizLines_; // v0.5.8: the Lines style's ribbon model (pure core)
+    tickerbar::VisualizerField vizField_; // v0.6.5: the Field style's vortex model (pure core)
     tickerbar::GlowField glow_;
     tickerbar::MascotAnim mascotAnim_;
     juce::Image vizCache_, vizBlur_, glowCache_;

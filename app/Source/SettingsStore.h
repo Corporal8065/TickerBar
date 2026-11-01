@@ -105,7 +105,7 @@ inline tickerbar::TickerState fromVar(const juce::var& v) {
     s.clickSounds = gb("clickSounds", s.clickSounds);
     s.dataColorScheme = juce::jlimit(0, 4, gi("dataColorScheme", s.dataColorScheme));
     s.bgEffect = juce::jlimit(0, 2, gi("bgEffect", s.bgEffect));
-    s.vizStyle = juce::jlimit(0, 1, gi("vizStyle", s.vizStyle)); // v0.5.8 (absent -> Bubbles)
+    s.vizStyle = juce::jlimit(0, 2, gi("vizStyle", s.vizStyle)); // v0.5.8 (absent -> Bubbles); v0.6.5: Field (2) admitted
     s.vizHue = gf("vizHue", s.vizHue); s.vizSat = gf("vizSat", s.vizSat);
     s.vizSpread = gf("vizSpread", s.vizSpread); s.vizCycle = gf("vizCycle", s.vizCycle);
     if (auto* wObj = g("cellWidths").getDynamicObject()) {
