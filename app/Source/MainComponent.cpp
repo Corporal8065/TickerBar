@@ -1946,7 +1946,7 @@ void MainComponent::doStackAll() {
 // lesson: moving the window from inside the menu callback wedges
 // it). One result space covers the whole menu tree, so the ids
 // below are unified (the old standalone menus each started at 1).
-enum { mnArrange = 1, mnRestore, mnStack, mnMinimize, mnQuit,
+enum { mnArrange = 1, mnRestore, mnStack, mnMinimize, mnQuit, mnCheckUpdates,
        mnPresetNew = 10, mnPresetSave, mnPresetSaveAs, mnPresetFolder, mnPresetLoadBase = 1000,
        mnEdgeTop = 20, mnEdgeBottom, mnEdgeLeft, mnEdgeRight, mnPin, mnReserve, mnDisplayBase = 2000 };
 juce::PopupMenu MainComponent::buildRepositionSubMenu() {
@@ -1996,6 +1996,7 @@ void MainComponent::showMainMenu() {
     m.addItem(mnStack, "Stack Linked Bars");
     m.addSubMenu("Reposition", buildRepositionSubMenu());
     m.addSeparator();
+    m.addItem(mnCheckUpdates, "Check for updates");
     m.addItem(mnMinimize, "Minimize");
     m.addItem(mnQuit, "Quit");
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(burgerBtn_), [this, presetFiles](int r) {
@@ -2014,6 +2015,7 @@ void MainComponent::showMainMenu() {
         else if (r >= mnPresetLoadBase && r < mnPresetLoadBase + presetFiles.size()) loadPresetFile(presetFiles[r - mnPresetLoadBase]);
         else if (r == mnArrange) doArrange();
         else if (r == mnRestore) doRestore();
+        else if (r == mnCheckUpdates) checkForUpdates();
         else if (r == mnMinimize) { if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
                                         if (auto* peer = w->getPeer()) peer->setMinimised(true); }
         else if (r == mnQuit) juce::JUCEApplication::getInstance()->systemRequestedQuit();

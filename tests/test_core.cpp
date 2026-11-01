@@ -3,6 +3,7 @@
 // sources (Coinbase Exchange public API + CoinGecko markets), plus
 // hand-broken variants and a captured CoinGecko 429 body.
 #include <cstdio>
+#include <cstdint>
 #include <cmath>
 #include <fstream>
 #include <sstream>
@@ -27,6 +28,7 @@
 #include <tickerbar/Visualizer.hpp>
 #include <tickerbar/Glow.hpp>
 #include <tickerbar/Mascot.hpp>
+#include <tickerbar/Glyphs.hpp>
 #include "TickerBarVersion.h" // v0.5.3: generated from the root project() VERSION
 #ifndef FIXTURES_DIR
 #define FIXTURES_DIR "tests/fixtures"
@@ -1121,6 +1123,41 @@ int main() {
                                    + std::to_string(TICKERBAR_VERSION_MINOR) + "."
                                    + std::to_string(TICKERBAR_VERSION_PATCH);
         CHECK(composed == std::string(tickerbar::kVersionString));
+    }
+
+    // ---- Glyphs (v0.6.2): the toolbar icon glyphs must be
+    // EXACTLY the UTF-8 encoding of their codepoints. The field
+    // failure was mojibake — MSVC decoded the raw literals as
+    // Windows-1252, so each sequence's first byte surfaced as a
+    // Latin-1 char (0xF0, 0xE2). Pin every glyph two
+    // ways: against an independent codepoint->UTF-8 encoder
+    // written here, and against the byte sequences themselves.
+    {
+        auto encodeUtf8 = [](std::uint32_t cp) {
+            std::string out;
+            if (cp < 0x80) {
+                out += (char)cp;
+            } else if (cp < 0x800) {
+                out += (char)(0xC0 | (cp >> 6));
+                out += (char)(0x80 | (cp & 0x3F));
+            } else if (cp < 0x10000) {
+                out += (char)(0xE0 | (cp >> 12));
+                out += (char)(0x80 | ((cp >> 6) & 0x3F));
+                out += (char)(0x80 | (cp & 0x3F));
+            } else {
+                out += (char)(0xF0 | (cp >> 18));
+                out += (char)(0x80 | ((cp >> 12) & 0x3F));
+                out += (char)(0x80 | ((cp >> 6) & 0x3F));
+                out += (char)(0x80 | (cp & 0x3F));
+            }
+            return out;
+        };
+        CHECK(std::string(tickerbar::glyphLinkUtf8()) == encodeUtf8(0x1F517));
+        CHECK(std::string(tickerbar::glyphLinkUtf8()) == std::string("\xF0\x9F\x94\x97", 4));
+        CHECK(std::string(tickerbar::glyphSettingsUtf8()) == encodeUtf8(0x2699));
+        CHECK(std::string(tickerbar::glyphSettingsUtf8()) == std::string("\xE2\x9A\x99", 3));
+        CHECK(std::string(tickerbar::glyphMenuUtf8()) == encodeUtf8(0x2630));
+        CHECK(std::string(tickerbar::glyphMenuUtf8()) == std::string("\xE2\x98\xB0", 3));
     }
 
     std::printf("\n%d checks, %d failures\n", checks, failures);

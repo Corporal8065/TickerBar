@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.22)
 # stale at 0.4.0 and every later build reported 0.4.0 to the updater
 # (Fiona's stuck-on-0.4.0 report); do not add another copy. Bump it
 # here, only here. (MeterBar made this move at its v0.19.)
-project(TickerBar VERSION 0.6.1 LANGUAGES C CXX)
+project(TickerBar VERSION 0.6.2 LANGUAGES C CXX)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/app/TickerBarVersion.h.in
                ${CMAKE_BINARY_DIR}/generated/TickerBarVersion.h)
 # Static MSVC runtime (/MT) so a built TickerBar.exe runs on a friend's
@@ -16,6 +16,12 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/app/TickerBarVersion.h.in
 # Must be set before any target is created (CMP0091). MSVC-only.
 if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  # v0.6.2: /utf-8 — pin the source AND execution character sets to
+  # UTF-8, so no non-ASCII literal anywhere can ever again be
+  # decoded as Windows-1252 (the icon-glyph mojibake; the glyphs
+  # themselves now also travel as explicit byte escapes — see
+  # core/include/tickerbar/Glyphs.hpp). MSVC-only; inert elsewhere.
+  add_compile_options(/utf-8)
 endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
