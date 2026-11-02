@@ -91,6 +91,7 @@ public:
         mine.heartbeatMs = now;
         mine.rect = toCore(r);
         mine.linked = isLinked && isLinked() ? 1 : 0;
+        mine.linkSeq = mine.linked ? myLinkSeq_ : 0; // BLK6 join-order stamp
         if (mine.linked && !foreignLive && !remoteApply) {
             if (!tickerbar::dragLive(mine, now)) { // new session: stamp the PRE-move rect
                 mine.dragSeq += 1;
@@ -129,17 +130,47 @@ public:
     // takes its standing packet on this tick. Only when there is no
     // such parent (I am the parent, or no packet exists yet) does
     // the item-13 re-stamp apply.
+    // BLK6 (first-clicked-wins): claim this bar's join-order stamp
+    // from the shared counter. Runs on the link OFF->ON edge, before
+    // refreshBgOnLinkJoin, so the parent computation below already
+    // sees the claim. The claim is also written straight into this
+    // bar's slot (the regular tick republishes it from myLinkSeq_).
+    void claimLinkSeq() {
+        if (!shared_) { myLinkSeq_ = 1; return; }
+#if JUCE_WINDOWS
+        Lock lock{ mutex_ };
+        if (shared_->magic == tickerbar::kLinkMagic) {
+            shared_->nextLinkSeq += 1;
+            myLinkSeq_ = shared_->nextLinkSeq;
+            shared_->slots[(size_t)appId_].appId = appId_;
+            shared_->slots[(size_t)appId_].linkSeq = myLinkSeq_;
+        }
+#endif
+    }
+
+    // Link-parent ownership (core BarLink.hpp defect 4/5): this
+    // bar's link just turned on. When a live linked PARENT (BLK6:
+    // the earliest-linked member — smallest linkSeq, see
+    // bgParentApp) already exists, the parent owns the shared
+    // background: do NOT re-stamp my pre-link values over the
+    // group — clear the parent's seen markers instead, so the
+    // adoption scan takes its standing packet on this tick. Only
+    // when there is no such parent (I am the parent — the first
+    // bar to link — or no packet exists yet) does the item-13
+    // re-stamp apply. A fresh joiner always holds the largest
+    // linkSeq, so it is never its own parent while an earlier
+    // member is live.
     void refreshBgOnLinkJoin() {
         tickerbar::LinkShared snap;
         if (readShared(snap)) {
             const long long now = nowMs();
-            for (int i = 0; i < 3; ++i) {
-                const auto& p = snap.slots[i];
-                if (p.appId >= 0 && p.appId < appId_ && p.linked && tickerbar::slotLive(p, now) && p.bgSeq != 0) {
-                    bgSync_.seenSeq[i] = 0;
-                    bgSync_.adoptedFrom = -1;
-                    return;
-                }
+            int parentSlot = -1;
+            const int parent = tickerbar::bgParentApp(snap, appId_, myLinkSeq_, now, &parentSlot);
+            if (parent >= 0 && parent != appId_ && parentSlot >= 0 && snap.slots[(size_t)parentSlot].bgSeq != 0) {
+                bgSync_.seenSeq[(size_t)parentSlot] = 0;
+                bgSync_.adoptedFrom = -1;
+                bgSync_.adoptedLinkSeq = 0;
+                return;
             }
         }
         tickerbar::bgForceRepublish(bgSync_);
@@ -159,6 +190,7 @@ public:
         mine.appId = appId_;
         mine.heartbeatMs = nowMs();
         mine.linked = 1;
+        mine.linkSeq = myLinkSeq_; // BLK6 join-order stamp rides every slot write
         mine.stackSeq += 1;
         mine.stackEdge = edgeOrdinal;
         mine.stackAnchor = toCore(anchor);
@@ -220,7 +252,8 @@ private:
         // re-stamp over the parent's background; refreshBgOnLinkJoin
         // makes it adopt the parent's standing packet instead.
         const bool linkedNow = isLinked && isLinked();
-        if (linkedNow && !wasLinked_) refreshBgOnLinkJoin();
+        if (linkedNow && !wasLinked_) { claimLinkSeq(); refreshBgOnLinkJoin(); }
+        if (!linkedNow && wasLinked_) myLinkSeq_ = 0;
         wasLinked_ = linkedNow;
         publishBg();
         tickerbar::LinkShared snap;
@@ -232,6 +265,7 @@ private:
         mine.heartbeatMs = now;
         mine.rect = toCore(r);
         mine.linked = isLinked && isLinked() ? 1 : 0;
+        mine.linkSeq = mine.linked ? myLinkSeq_ : 0; // BLK6 join-order stamp
         mine.dockedEdge = getDockedEdge ? getDockedEdge() : -1;
         // Item 17: audio broadcast — re-stamp only on material change.
         if (getAudio) {
@@ -334,6 +368,7 @@ private:
         tickerbar::LinkSlot mine = snap.slots[(size_t)appId_];
         mine.appId = appId_;
         mine.heartbeatMs = nowMs();
+        mine.linkSeq = myLinkSeq_; // BLK6: a bg re-stamp must not drop the join-order stamp
         mine.bgStyle = bg.style;
         mine.bgOpacityPct = pct;
         mine.bgEffect = bg.effect;
@@ -400,6 +435,7 @@ private:
     tickerbar::IntRect followOwnStart_{}, followLeaderStart_{};
     std::tuple<int, int, int, int, int, int> dockKey_{ -1, -1, 0, 0, 0, 0 };
     tickerbar::BgSyncState bgSync_;
+    unsigned myLinkSeq_ = 0;              // BLK6: this bar's claimed join-order stamp (0 = unlinked)
     bool wasLinked_ = false;              // item 13: link-edge detection for the forced republish
     unsigned seenStackSeq_[3] = { 0, 0, 0 }; // item 12: last stack request consumed per app // v0.2.1: publish/adopt bookkeeping (core decisions)
 };

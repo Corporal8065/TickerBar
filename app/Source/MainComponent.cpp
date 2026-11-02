@@ -1777,8 +1777,17 @@ int MainComponent::minimumBarWidth() const {
 
 // MainWindow moved/resized feed — the reserve machine's event source
 // (plus settings persistence for the new position).
+// v0.6.7 DRAG-LEAD FIX: this feed never called the link client's
+// geometry notify — the ONLY place a link drag session is stamped —
+// so TickerBar could FOLLOW a linked drag (its link timer does
+// that) but could never LEAD one: dragging TickerBar moved it
+// alone while dragging MeterBar moved the stack (Jackson's field
+// report 2026-11-01, against his standing rule that dragging ANY
+// linked bar moves the whole stack). MeterBar and SessionBar call
+// the notify in their twins of this function; now TickerBar does.
 void MainComponent::notifyWindowGeometryChanged() {
     syncScreenSpace();
+    linkClient_.notifyLocalGeometry();
     auto b = currentWindowBounds();
     if (b != lastSavedBounds_ && !b.isEmpty()) { lastSavedBounds_ = b; saveSettings(); }
 }
