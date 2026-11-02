@@ -2317,15 +2317,7 @@ void MainComponent::drawVisualizerBackground(juce::Graphics& g) {
     // MeterBar's composite: black -> blurred particle layer (the
     // colour wash covers the whole background) -> crisp dots.
     auto bounds = getLocalBounds();
-    g.fillAll(juce::Colours::black);
     if (bounds.isEmpty()) return;
-    const int iw = juce::jlimit(1, 480, bounds.getWidth() / 2);
-    const int ih = juce::jlimit(1, 270, bounds.getHeight() / 2);
-    if (!vizCache_.isValid() || vizCache_.getWidth() != iw || vizCache_.getHeight() != ih) {
-        vizCache_ = juce::Image(juce::Image::RGB, iw, ih, true);
-        vizBlurFrame_ = 0; // v0.6.4: layer resized — force a blur recompute below
-    }
-    auto vs = vizSettings();
     // v0.5.0: LINKED, the particle field spans the GROUP — the
     // union of the linked bars' screen rects — and this bar draws
     // only its slice of it (core fieldMap; the glow below has
@@ -2334,6 +2326,26 @@ void MainComponent::drawVisualizerBackground(juce::Graphics& g) {
     auto group = linkClient_.groupRect();
     auto own = getScreenBounds();
     if (group.isEmpty() || own.isEmpty()) group = own;
+    // v0.6.6: LINKED, the base under the effect is the SHARED styled
+    // background at the shared opacity — the same base the parent
+    // paints — so the stack reads as one surface under the particles
+    // (SessionBar v0.4.14 twin). Before this the base was an opaque
+    // black fillAll: the adopted style was dropped entirely in
+    // effect mode and the adopted opacity could never show through.
+    // Unlinked/alone the base is the historical opaque black,
+    // byte-for-byte the old render.
+    if (group != own)
+        fillStyledBackground(g, bounds.toFloat(), state.backgroundStyle, theme_,
+                             juce::jlimit(0.15f, 1.0f, state.backgroundOpacity));
+    else
+        g.fillAll(juce::Colours::black);
+    const int iw = juce::jlimit(1, 480, bounds.getWidth() / 2);
+    const int ih = juce::jlimit(1, 270, bounds.getHeight() / 2);
+    if (!vizCache_.isValid() || vizCache_.getWidth() != iw || vizCache_.getHeight() != ih) {
+        vizCache_ = juce::Image(juce::Image::RGB, iw, ih, true);
+        vizBlurFrame_ = 0; // v0.6.4: layer resized — force a blur recompute below
+    }
+    auto vs = vizSettings();
     const auto fm = tickerbar::fieldMap(
         tickerbar::IntRect{ own.getX(), own.getY(), own.getWidth(), own.getHeight() },
         tickerbar::IntRect{ group.getX(), group.getY(), group.getWidth(), group.getHeight() }, iw, ih);
@@ -2441,15 +2453,23 @@ void MainComponent::drawGlowBackground(juce::Graphics& g) {
     // reads as one continuous surface; unlinked, the group is the
     // bar itself. Near-black base, soft blooms, pinstripes on top.
     auto bounds = getLocalBounds();
-    g.fillAll(juce::Colours::black);
     if (bounds.isEmpty()) return;
+    auto group = linkClient_.groupRect();
+    auto own = getScreenBounds();
+    if (group.isEmpty() || own.isEmpty()) group = own;
+    // v0.6.6: LINKED, the base under the glow is the shared styled
+    // background at the shared opacity (see drawVisualizerBackground;
+    // SessionBar v0.4.14 twin); unlinked/alone it stays the
+    // historical opaque black.
+    if (group != own)
+        fillStyledBackground(g, bounds.toFloat(), state.backgroundStyle, theme_,
+                             juce::jlimit(0.15f, 1.0f, state.backgroundOpacity));
+    else
+        g.fillAll(juce::Colours::black);
     const int iw = juce::jlimit(8, 240, bounds.getWidth() / 4);
     const int ih = juce::jlimit(8, 135, bounds.getHeight() / 4);
     if (!glowCache_.isValid() || glowCache_.getWidth() != iw || glowCache_.getHeight() != ih)
         glowCache_ = juce::Image(juce::Image::RGB, iw, ih, true);
-    auto group = linkClient_.groupRect();
-    auto own = getScreenBounds();
-    if (group.isEmpty() || own.isEmpty()) group = own;
     auto gs = glowSettings();
     {
         juce::Image::BitmapData bd(glowCache_, juce::Image::BitmapData::writeOnly);

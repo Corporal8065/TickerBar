@@ -574,14 +574,51 @@ int main() {
     CHECK(!bgAdoption(sh, 1, sync, now, out));
     peer.bgSeq = 11; peer.appId = 1; // the peer slot carries OUR id: self, ignored
     CHECK(!bgAdoption(sh, 1, sync, now, out));
-    // two peers changed at once: the LAST in slot order wins, both are marked seen
+    // v0.6.6 parent ownership: two peers changed at once — the
+    // PARENT (lowest appId) supplies the background; the follower
+    // peer's packet is not consumed at all.
     LinkShared sh2; BgSyncState sync2;
     auto& p0 = sh2.slots[0]; p0.appId = 0; p0.linked = 1; p0.heartbeatMs = now; p0.bgSeq = 3; p0.bgStyle = 1; p0.bgOpacityPct = 70;
     auto& p2 = sh2.slots[2]; p2.appId = 2; p2.linked = 1; p2.heartbeatMs = now; p2.bgSeq = 4; p2.bgStyle = 2; p2.bgOpacityPct = 30;
     CHECK(bgAdoption(sh2, 1, sync2, now, out));
-    CHECK(out.style == 2 && out.opacityPct == 30);
-    CHECK(sync2.seenSeq[0] == 3 && sync2.seenSeq[2] == 4);
+    CHECK(out.style == 1 && out.opacityPct == 70);
+    CHECK(sync2.seenSeq[0] == 3 && sync2.seenSeq[2] == 0);
+    CHECK(sync2.adoptedFrom == 0);
     CHECK(!bgAdoption(sh2, 1, sync2, now, out));
+    // the parent itself adopts from NOBODY, however fresh the
+    // followers' packets are (the pre-v0.6.6 swap defect: at link
+    // join each bar adopted the other's stale background)
+    BgSyncState syncP;
+    CHECK(!bgAdoption(sh2, 0, syncP, now, out));
+    CHECK(syncP.adoptedFrom == -1);
+    // with the parent gone, THIS bar (appId 1) becomes the parent:
+    // it adopts from nobody either, and its adoptedFrom resets so a
+    // later parent is never mistaken for the source of its values
+    p0.linked = 0;
+    CHECK(!bgAdoption(sh2, 1, sync2, now, out));
+    CHECK(sync2.adoptedFrom == -1);
+    // parent turnover, seen from the follower's side: with appId 0
+    // live, appId 2 adopts ITS packet; with 0 gone, appId 1 is the
+    // parent and appId 2 adopts 1's standing packet — even though
+    // that seq was never consumed before
+    LinkShared sh3; BgSyncState sync3;
+    auto& q0 = sh3.slots[0]; q0.appId = 0; q0.linked = 1; q0.heartbeatMs = now; q0.bgSeq = 5; q0.bgStyle = 3; q0.bgOpacityPct = 80;
+    auto& q1 = sh3.slots[1]; q1.appId = 1; q1.linked = 1; q1.heartbeatMs = now; q1.bgSeq = 6; q1.bgStyle = 2; q1.bgOpacityPct = 30;
+    CHECK(bgAdoption(sh3, 2, sync3, now, out));
+    CHECK(out.style == 3 && out.opacityPct == 80);
+    CHECK(sync3.adoptedFrom == 0);
+    q0.linked = 0;
+    CHECK(bgAdoption(sh3, 2, sync3, now, out));
+    CHECK(out.style == 2 && out.opacityPct == 30);
+    CHECK(sync3.adoptedFrom == 1);
+    // and when the original parent returns with the SAME seq it had
+    // before, its packet is authoritative again — adoptedFrom, not
+    // the seen marker, decides (the values changed hands meanwhile)
+    q0.linked = 1;
+    CHECK(bgAdoption(sh3, 2, sync3, now, out));
+    CHECK(out.style == 3 && out.opacityPct == 80);
+    CHECK(sync3.adoptedFrom == 0);
+    CHECK(!bgAdoption(sh3, 2, sync3, now, out));
 }
 
 
