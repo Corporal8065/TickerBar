@@ -15,6 +15,7 @@
 #include <memory>
 #include <vector>
 #include "Theme.h"
+#include "TextPop.h" // v0.6.8: corrected-geometry text pop (colour behind bottom-right, white in front)
 #include "PriceClient.h"
 #include "ContextClient.h"
 #include "ScreenSpace.h"
@@ -45,6 +46,61 @@ public:
             if (juce::Font::findAllTypefaceNames().contains(name))
                 return juce::Font(juce::FontOptions(juce::String(name), h, juce::Font::plain));
         return juce::Font(juce::FontOptions(h));
+    }
+};
+
+// v0.6.8: button text with the TEXT POP (TextPop.h, corrected
+// geometry). Stock V4 in every respect except drawButtonText,
+// which mirrors LookAndFeel_V2's geometry and routes the text
+// through textpop::drawFitted. Applied ONLY to the text Update!
+// button — the icon cluster's GLYPH buttons keep the stock
+// single draw above (Jackson: emoji text was good as it was,
+// it must not be doubled).
+class PoppedButtonLookAndFeel : public juce::LookAndFeel_V4 {
+public:
+    void drawButtonText(juce::Graphics& g, juce::TextButton& button,
+                        bool /*shouldDrawButtonAsHighlighted*/, bool /*shouldDrawButtonAsDown*/) override {
+        juce::Font font(getTextButtonFont(button, button.getHeight()));
+        g.setFont(font);
+        const auto colour = button.findColour(button.getToggleState() ? juce::TextButton::textColourOnId
+                                                                      : juce::TextButton::textColourOffId)
+                              .withMultipliedAlpha(button.isEnabled() ? 1.0f : 0.5f);
+        const int yIndent = juce::jmin(4, button.proportionOfHeight(0.3f));
+        const int cornerSize = juce::jmin(button.getHeight(), button.getWidth()) / 2;
+        const int fontHeight = juce::roundToInt(font.getHeight() * 0.6f);
+        const int leftIndent = juce::jmin(fontHeight, 2 + cornerSize / (button.isConnectedOnLeft() ? 4 : 2));
+        const int rightIndent = juce::jmin(fontHeight, 2 + cornerSize / (button.isConnectedOnRight() ? 4 : 2));
+        const int textWidth = button.getWidth() - leftIndent - rightIndent;
+        if (textWidth > 0)
+            textpop::drawFitted(g, button.getButtonText(),
+                                juce::Rectangle<int>(leftIndent, yIndent, textWidth, button.getHeight() - yIndent * 2),
+                                juce::Justification::centred, 2, 1.0f, colour);
+    }
+};
+
+// v0.6.8: the toolbar labels (wordmark / version / status) with
+// the TEXT POP — mirrors LookAndFeel_V2::drawLabel, routing the
+// fitted text through textpop::drawFitted. The labels sit over
+// the bar's transparent / visual background; their background
+// and outline colours are transparent, so only the text changes.
+class PoppedLabelLookAndFeel : public juce::LookAndFeel_V4 {
+public:
+    void drawLabel(juce::Graphics& g, juce::Label& label) override {
+        g.fillAll(label.findColour(juce::Label::backgroundColourId));
+        if (!label.isBeingEdited()) {
+            const auto alpha = label.isEnabled() ? 1.0f : 0.5f;
+            const juce::Font font(getLabelFont(label));
+            g.setFont(font);
+            auto textArea = getLabelBorderSize(label).subtractedFrom(label.getLocalBounds());
+            textpop::drawFitted(g, label.getText(), textArea, label.getJustificationType(),
+                                juce::jmax(1, (int)((float)textArea.getHeight() / font.getHeight())),
+                                label.getMinimumHorizontalScale(),
+                                label.findColour(juce::Label::textColourId).withMultipliedAlpha(alpha));
+            g.setColour(label.findColour(juce::Label::outlineColourId).withMultipliedAlpha(alpha));
+        } else if (label.isEnabled()) {
+            g.setColour(label.findColour(juce::Label::outlineColourId));
+        }
+        g.drawRect(label.getLocalBounds());
     }
 };
 
@@ -108,6 +164,7 @@ public:
     void setAlerts(const std::string& symbol, double above, double below);
     void settingsChanged(bool watchlistToo); // apply + persist; watchlistToo also rebuilds cells and the client list
     void resetLayoutToDefaults();       // v0.3.2: Settings button — layout fields only (core resetLayoutToDefaults)
+    void resetSettingsToDefaults();     // v0.6.8: Settings button — ALL settings back to factory defaults, applied live (core resetAllSettingsToDefaults)
     int  symbolCellWidth(const std::string& symbol) const; // v0.5.6: Sizes panel read — stored explicit width, 0 = auto
     void setSymbolCellWidth(const std::string& symbol, int px); // v0.5.6: Sizes panel write — the SAME cellWidths store the dividers drag
     void resetSymbolCellWidths();       // v0.5.6: Sizes panel reset — every symbol back to auto width (v0.5.9: context widths too)
@@ -207,6 +264,8 @@ private:
     std::map<std::string, double> lastPrices_; // mascot tick triggers (item 18)
     std::unique_ptr<TickerSettingsWindow> settingsWin_;
 
+    PoppedLabelLookAndFeel popLabelLnf_;   // v0.6.8: text pop for the toolbar labels — declared before them so it outlives them
+    PoppedButtonLookAndFeel popButtonLnf_; // v0.6.8: text pop for the Update! text button only — declared before the buttons so it outlives them
     juce::Label wordmark_, versionLabel_, statusLabel_;
     IconButtonLookAndFeel iconLnf_; // v0.6.1: declared before the buttons so it outlives them
     // v0.6.0: icon-only cluster (see the class comment). The

@@ -218,6 +218,25 @@ public:
         return n;
     }
 
+    // v0.6.8: true while this bar is linked AND at least one live
+    // linked peer is in the block. The effect-background paint
+    // paths decide "shared base vs historical opaque black" from
+    // THIS — link state — not from group-rect geometry: the
+    // v0.6.6 fix keyed on (groupRect != own rect), so a linked
+    // peer whose rect momentarily coincided with this bar's (or
+    // whose rect was not yet stamped) silently dropped the bar
+    // back to the opaque-black base and the adopted style/opacity
+    // stopped lining up even though adoption itself had landed.
+    bool hasLiveLinkedPeer() {
+        if (!shared_ || !(isLinked && isLinked())) return false;
+        tickerbar::LinkShared snap;
+        if (!readShared(snap)) return false;
+        const long long now = nowMs();
+        for (auto& sl : snap.slots)
+            if (sl.appId >= 0 && sl.appId != appId_ && sl.linked && tickerbar::slotLive(sl, now)) return true;
+        return false;
+    }
+
     // The union rect of this bar + its live linked peers — the
     // reactive-glow field's group space (item 17). Unlinked or alone:
     // the bar's own rect.

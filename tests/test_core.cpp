@@ -715,6 +715,87 @@ int main() {
 }
 
 
+// ---- v0.6.8: CONTINUOUS adoption (defect 6) + full settings reset ----
+{
+    using namespace tickerbar;
+    const long long now = 400000;
+    BgPacket out;
+    // Parent = appId 0 (linkSeq 1, clicked first); self = appId 1.
+    LinkShared sh;
+    auto& p0 = sh.slots[0]; p0.appId = 0; p0.linked = 1; p0.heartbeatMs = now; p0.linkSeq = 1; p0.bgSeq = 5; p0.bgStyle = 1; p0.bgOpacityPct = 70; p0.bgEffect = 2;
+    auto& p1 = sh.slots[1]; p1.appId = 1; p1.linked = 1; p1.heartbeatMs = now; p1.linkSeq = 2; p1.bgSeq = 3; p1.bgStyle = 0; p1.bgOpacityPct = 100; p1.bgEffect = 0;
+    BgSyncState sy;
+    // adoption at join (style + opacity + effect all ride the packet)
+    CHECK(bgAdoption(sh, 1, sy, now, out));
+    CHECK(out.style == 1 && out.opacityPct == 70 && out.effect == 2);
+    CHECK(!bgAdoption(sh, 1, sy, now, out)); // settled: nothing to do
+    // the parent's LATER change while linked adopts on its new seq
+    p0.bgSeq = 6; p0.bgStyle = 3; p0.bgOpacityPct = 25; p0.bgEffect = 4;
+    CHECK(bgAdoption(sh, 1, sy, now, out));
+    CHECK(out.style == 3 && out.opacityPct == 25 && out.effect == 4);
+    CHECK(!bgAdoption(sh, 1, sy, now, out));
+    // a change made FROM THE FOLLOWER while linked: the follower's
+    // publish path records its own divergent values as published —
+    // adoption must re-fire on the SAME parent seq and restore the
+    // parent's values (pre-v0.6.8 the gate stayed shut forever).
+    sy.publishedStyle = 2; sy.publishedPct = 90; sy.publishedEffect = 1; // the follower's local change, as publishBg records it
+    CHECK(bgAdoption(sh, 1, sy, now, out));
+    CHECK(out.style == 3 && out.opacityPct == 25 && out.effect == 4);
+    CHECK(sy.publishedStyle == 3 && sy.publishedPct == 25 && sy.publishedEffect == 4); // parent's values are the published values again: no echo, no loop
+    CHECK(!bgAdoption(sh, 1, sy, now, out));
+    // a forced republish (published markers reset) also re-adopts
+    // the standing parent packet rather than re-stamping over it
+    bgForceRepublish(sy);
+    CHECK(bgAdoption(sh, 1, sy, now, out));
+    CHECK(out.style == 3 && out.opacityPct == 25);
+    // parent turnover re-adopts: the parent unlinks, self becomes
+    // the parent (adopts from nobody, adoptedFrom resets)...
+    p0.linked = 0;
+    CHECK(!bgAdoption(sh, 1, sy, now, out));
+    CHECK(sy.adoptedFrom == -1);
+    // ...and from a third bar's seat, the takeover parent's standing
+    // packet is adopted even mid-divergence
+    LinkShared shT = sh;
+    auto& t2 = shT.slots[2]; t2.appId = 2; t2.linked = 1; t2.heartbeatMs = now; t2.linkSeq = 3; t2.bgSeq = 9; t2.bgStyle = 0; t2.bgOpacityPct = 55; t2.bgEffect = 0;
+    BgSyncState syT; syT.publishedStyle = 0; syT.publishedPct = 55; syT.publishedEffect = 0; syT.adoptedFrom = 2;
+    CHECK(bgAdoption(shT, 2, syT, now, out));
+    CHECK(syT.adoptedFrom == 1 && out.style == 0 && out.opacityPct == 100 && out.effect == 0);
+    // the magic / packet layout did NOT move in v0.6.8 (BLK6 family
+    // compatibility with already-shipped builds)
+    CHECK(kLinkMagic == 0x424C4B36u);
+}
+{
+    using namespace tickerbar;
+    // FULL factory reset (v0.6.8): every field returns to default...
+    TickerState s;
+    s.watchlist = { "SOL", "DOGE" };
+    s.alertSound = true; s.alertToasts = false;
+    s.linkEnabled = true; s.linkBackground = false;
+    s.themeName = "Anime"; s.backgroundStyle = BackgroundStyle::Pastel; s.backgroundOpacity = 0.3f;
+    s.pinned = false; s.reserveScreenSpace = true; s.dockEdge = DockEdge::Right;
+    s.pollSec = 60; s.clickSounds = true; s.dataColorScheme = 3;
+    s.bgEffect = 2; s.vizStyle = 2; s.vizHue = 0.1f;
+    s.cellWidths["SOL"] = 222; s.showFearGreed = false; s.fngCellWidth = 180;
+    AlertLevels lv; lv.above = 1.0; s.alerts["SOL"] = lv;
+    resetAllSettingsToDefaults(s);
+    TickerState d;
+    CHECK(s.watchlist == d.watchlist);
+    CHECK(s.alerts.empty());
+    CHECK(s.alertSound == d.alertSound && s.alertToasts == d.alertToasts);
+    CHECK(s.linkEnabled == d.linkEnabled && s.linkBackground == d.linkBackground);
+    CHECK(s.themeName == d.themeName && s.backgroundStyle == d.backgroundStyle && s.backgroundOpacity == d.backgroundOpacity);
+    CHECK(s.pinned == d.pinned && s.reserveScreenSpace == d.reserveScreenSpace && s.dockEdge == d.dockEdge);
+    CHECK(s.pollSec == d.pollSec && s.clickSounds == d.clickSounds && s.dataColorScheme == d.dataColorScheme);
+    CHECK(s.bgEffect == d.bgEffect && s.vizStyle == d.vizStyle && s.vizHue == d.vizHue);
+    CHECK(s.cellWidths.empty() && s.showFearGreed == d.showFearGreed && s.fngCellWidth == d.fngCellWidth);
+    // ...while the LAYOUT reset still touches layout only (the
+    // distinction the Settings sheet's two buttons rely on)
+    TickerState l; l.pollSec = 60; l.themeName = "Anime"; l.bgEffect = 2; l.cellWidths["BTC"] = 200;
+    resetLayoutToDefaults(l);
+    CHECK(l.pollSec == 60 && l.themeName == "Anime" && l.bgEffect == 2);
+    CHECK(l.cellWidths.empty());
+}
+
     // ---------- v0.3.0: SemVer ----------
     {
         SemVer v;

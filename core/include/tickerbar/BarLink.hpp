@@ -235,6 +235,23 @@ inline IntRect groupDockRect(IntRect leader, IntRect follower, ReserveEdge edge)
 //     never the parent while an earlier member is live). A parent
 //     that unlinks and relinks claims a NEW linkSeq and returns
 //     as a late joiner.
+//
+//  6. ONE-SHOT ADOPTION (v0.6.8, Jackson's 2026-11-02 19:38 field
+//     report — "the background style and opacity does not line up
+//     when linking" — filed AFTER the v0.6.6/BLK6 fixes shipped):
+//     defects 4+5 made adoption fire at join and on parent seq /
+//     identity / linkSeq changes, but nothing re-checked it after
+//     that. A follower that changed its OWN background while
+//     linked recorded those values as its published values (the
+//     client's publish path) and then kept them indefinitely: the
+//     parent's seq had not moved and its identity had not changed,
+//     so the adoption gate stayed shut and the follower's style /
+//     opacity / effect diverged from the parent's until the parent
+//     happened to change something. Rule: adoption is CONTINUOUS
+//     — whenever this app's published values differ from the
+//     parent's standing packet, the packet is (re-)adopted,
+//     whatever the seq bookkeeping says. The parent governs for
+//     the whole link, not just at join.
 struct BgPacket {
     int style = 0;      // family background-style ordinal (LinkSlot::bgStyle)
     int opacityPct = 100;
@@ -312,7 +329,12 @@ inline int bgParentApp(const LinkShared& sh, int selfApp, unsigned selfLinkSeq, 
 // parent's standing packet is authoritative even if its seq was
 // consumed under an old regime), or the parent's linkSeq (the
 // parent relinked, or its packet first appeared in the block
-// after this app's earlier scans). Adopted values are recorded
+// after this app's earlier scans) — OR, since v0.6.8 (defect 6),
+// whenever this app's published values have DIVERGED from the
+// packet (a follower-side local change, or a forced republish
+// that reset the published markers): adoption is continuous, so
+// the parent's standing values are re-applied on the next scan.
+// Adopted values are recorded
 // as this app's published values (the echo rule). Peers that are
 // unlinked, stale, empty, or not the parent never supply values.
 inline bool bgAdoption(const LinkShared& sh, int selfApp, BgSyncState& s, long long nowMs, BgPacket& out) {
@@ -325,7 +347,14 @@ inline bool bgAdoption(const LinkShared& sh, int selfApp, BgSyncState& s, long l
     if (parentSlot < 0) return false;
     const LinkSlot& p = sh.slots[parentSlot];
     if (p.bgSeq == 0) return false;
-    if (p.bgSeq == s.seenSeq[parentSlot] && s.adoptedFrom == parentApp && s.adoptedLinkSeq == p.linkSeq) return false;
+    // v0.6.8 (defect 6): the seq/identity/linkSeq gate alone is
+    // one-shot — it stays shut after a follower-side local change
+    // overwrote the published markers with divergent values. The
+    // packet is also (re-)adopted whenever the published values
+    // differ from it, so the parent governs continuously.
+    const bool triggerMoved = p.bgSeq != s.seenSeq[parentSlot] || s.adoptedFrom != parentApp || s.adoptedLinkSeq != p.linkSeq;
+    const bool diverged = s.publishedStyle != p.bgStyle || s.publishedPct != p.bgOpacityPct || s.publishedEffect != p.bgEffect;
+    if (!triggerMoved && !diverged) return false;
     s.seenSeq[parentSlot] = p.bgSeq;
     s.adoptedFrom = parentApp;
     s.adoptedLinkSeq = p.linkSeq;

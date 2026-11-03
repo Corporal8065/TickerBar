@@ -62,6 +62,20 @@ struct TickerState {
 // Watchlist MEMBERSHIP is not layout: extra symbols are kept, in
 // their current relative order, after the factory trio; alerts,
 // poll interval, theme and every other setting are untouched.
+// RESET SETTINGS TO DEFAULTS (v0.6.8, the Settings button Jackson
+// asked for across the bar family 2026-11-02) — the FULL factory
+// reset the layout reset above deliberately is not: EVERY field
+// returns to its TickerState default (watchlist, alerts, theme,
+// background style/opacity/effect, palette, link toggles, poll
+// interval, window fields, cell widths, context toggles). The
+// app's apply path re-reads the live window bounds into the
+// window fields when it persists (MainComponent::saveSettings),
+// so the bar itself does not jump to the factory position —
+// every VISIBLE setting, however, is the factory value.
+inline void resetAllSettingsToDefaults(TickerState& s) {
+    s = TickerState{};
+}
+
 inline void resetLayoutToDefaults(TickerState& s) {
     s.cellWidths.clear();
     s.fngCellWidth = 0;

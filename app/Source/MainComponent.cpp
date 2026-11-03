@@ -182,13 +182,14 @@ public:
         auto lay = tickerbar::coinCellTopRow((int)top.getWidth(),
                                              (int)std::ceil(symFont.getStringWidthFloat(juce::String(symbol))),
                                              pct ? (int)std::ceil(pctFont.getStringWidthFloat(pctText)) : 0);
-        g.setColour(th.text.withAlpha(alpha)); g.setFont(symFont);
-        g.drawText(juce::String(symbol), top.removeFromLeft((float)lay.symbolW), juce::Justification::centredLeft);
+        // v0.6.8: cell text over the transparent background gets
+        // the text pop (TextPop.h, corrected geometry).
+        g.setFont(symFont);
+        textpop::draw(g, juce::String(symbol), top.removeFromLeft((float)lay.symbolW), juce::Justification::centredLeft, th.text.withAlpha(alpha));
         top.removeFromLeft((float)lay.gap);
         if (pct) {
-            g.setColour(owner->gainColour(*pct >= 0).withAlpha(alpha));
             g.setFont(pctFont);
-            g.drawText(pctText, top.removeFromLeft((float)lay.pctW), juce::Justification::centredRight);
+            textpop::draw(g, pctText, top.removeFromLeft((float)lay.pctW), juce::Justification::centredRight, owner->gainColour(*pct >= 0).withAlpha(alpha));
         }
         // price row: price (left) + 1h % (right, v0.2.0 item e — from
         // the hourly candles already fetched for the sparkline; no
@@ -201,13 +202,12 @@ public:
         auto lay2 = tickerbar::coinCellTopRow((int)mid.getWidth(),
                                               (int)std::ceil(priceFont.getStringWidthFloat(priceText)),
                                               pct1h ? (int)std::ceil(h1Font.getStringWidthFloat(h1Text)) : 0);
-        g.setColour(th.text.withAlpha(alpha)); g.setFont(priceFont);
-        g.drawText(priceText, mid.removeFromLeft((float)lay2.symbolW), juce::Justification::centredLeft);
+        g.setFont(priceFont);
+        textpop::draw(g, priceText, mid.removeFromLeft((float)lay2.symbolW), juce::Justification::centredLeft, th.text.withAlpha(alpha));
         mid.removeFromLeft((float)lay2.gap);
         if (pct1h) {
-            g.setColour(owner->gainColour(*pct1h >= 0).withAlpha(alpha));
             g.setFont(h1Font);
-            g.drawText(h1Text, mid.removeFromLeft((float)lay2.pctW), juce::Justification::centredRight);
+            textpop::draw(g, h1Text, mid.removeFromLeft((float)lay2.pctW), juce::Justification::centredRight, owner->gainColour(*pct1h >= 0).withAlpha(alpha));
         }
         // sparkline (24h of hourly closes) or state line
         if (!candles.empty()) {
@@ -228,13 +228,13 @@ public:
             g.setColour(lineCol.withAlpha(0.16f)); g.fillPath(fill);
             g.setColour(lineCol); g.strokePath(p, juce::PathStrokeType(1.4f));
         } else {
-            g.setColour(th.dim.withAlpha(alpha)); g.setFont(10.5f);
-            g.drawText(has ? juce::String("chart loading...") : juce::String("waiting for data..."),
-                       r, juce::Justification::centredLeft);
+            g.setFont(10.5f);
+            textpop::draw(g, has ? juce::String("chart loading...") : juce::String("waiting for data..."),
+                          r, juce::Justification::centredLeft, th.dim.withAlpha(alpha));
         }
         if (stale && has) {
-            g.setColour(th.warn); g.setFont(juce::Font(9.f, juce::Font::bold));
-            g.drawText("STALE", b.reduced(7.f, 4.f), juce::Justification::bottomRight);
+            g.setFont(juce::Font(9.f, juce::Font::bold));
+            textpop::draw(g, juce::String("STALE"), b.reduced(7.f, 4.f), juce::Justification::bottomRight, th.warn);
         }
     }
 private:
@@ -274,15 +274,16 @@ public:
         g.setColour(th.border.withAlpha(alpha));
         g.drawRoundedRectangle(b, 8.f, 1.f);
         auto r = b.reduced(9.f, 5.f);
-        g.setColour(th.dim.withAlpha(alpha)); g.setFont(juce::Font(9.f, juce::Font::bold));
-        g.drawText(title, r.removeFromTop(12.f), juce::Justification::centredLeft);
-        g.setColour((has ? valueColour : th.dim).withAlpha(alpha)); g.setFont(juce::Font(16.5f, juce::Font::bold));
-        g.drawText(has ? valueText : juce::String("--"), r.removeFromTop(24.f), juce::Justification::centredLeft);
-        g.setColour(th.dim.withAlpha(alpha)); g.setFont(10.5f);
-        g.drawText(has ? subText : juce::String("loading..."), r, juce::Justification::centredLeft);
+        // v0.6.8: text pop, same as the coin cells (TextPop.h).
+        g.setFont(juce::Font(9.f, juce::Font::bold));
+        textpop::draw(g, title, r.removeFromTop(12.f), juce::Justification::centredLeft, th.dim.withAlpha(alpha));
+        g.setFont(juce::Font(16.5f, juce::Font::bold));
+        textpop::draw(g, has ? valueText : juce::String("--"), r.removeFromTop(24.f), juce::Justification::centredLeft, (has ? valueColour : th.dim).withAlpha(alpha));
+        g.setFont(10.5f);
+        textpop::draw(g, has ? subText : juce::String("loading..."), r, juce::Justification::centredLeft, th.dim.withAlpha(alpha));
         if (stale && has) {
-            g.setColour(th.warn); g.setFont(juce::Font(9.f, juce::Font::bold));
-            g.drawText("STALE", b.reduced(7.f, 4.f), juce::Justification::bottomRight);
+            g.setFont(juce::Font(9.f, juce::Font::bold));
+            textpop::draw(g, juce::String("STALE"), b.reduced(7.f, 4.f), juce::Justification::bottomRight, th.warn);
         }
     }
 };
@@ -706,6 +707,10 @@ public:
             note("Stack is the one-click form of Link + Dock: it turns Link on, snaps this bar to its dock edge, and every other linked bar lines up flush against it. The Stack button on the bar does the same.");
             note("Arrange slides every other (non-maximised) window on the bar's monitor clear of the bar; Restore puts them back. Screen space: " + owner->screenSpaceStatus());
         });
+        panel("Reset", [&]{
+            button("Reset settings to defaults", [this]{ owner->resetSettingsToDefaults(); });
+            note("ALL settings back to factory defaults - watchlist, alerts, theme, background style / opacity / effect, link toggles, poll interval and every cell width - applied immediately. (\"Reset layout to defaults\" above only restores the layout.) Preset files on disk are not deleted.");
+        });
         panel("About", [&]{
             buttonRow("Check for updates", "GitHub",
                       [this]{ owner->checkForUpdates(); },
@@ -852,6 +857,12 @@ MainComponent::MainComponent() {
         addAndMakeVisible(c);
         c->setInterceptsMouseClicks(false, false); // clicks fall through to the bar drag
     }
+    // v0.6.8: the toolbar labels get the text pop (they sit over
+    // the bar's transparent / visual background). The glyph
+    // buttons below keep their single-draw icon LookAndFeel.
+    wordmark_.setLookAndFeel(&popLabelLnf_);
+    versionLabel_.setLookAndFeel(&popLabelLnf_);
+    statusLabel_.setLookAndFeel(&popLabelLnf_);
     // v0.5.5: the standalone Reserve button is GONE — Reserve lives
     // in the Reposition dropdown now (Jackson's ask), as the ticked
     // "Reserve Screen Space" item. state.reserveScreenSpace itself
@@ -880,6 +891,7 @@ MainComponent::MainComponent() {
     // v0.3.0 item 1: the update indicator starts hidden and lights
     // only when a check finds a newer release (MeterBar's pattern).
     updateBtn_.setVisible(false);
+    updateBtn_.setLookAndFeel(&popButtonLnf_); // v0.6.8: text pop for the Update! TEXT button (not a glyph button)
     updateBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop);
         if (pendingRelease_.ok && pendingRelease_.newer) showUpdatePanel(pendingRelease_); };
     for (auto* b : { &linkBtn_, &settingsBtn_, &updateBtn_, &burgerBtn_ }) addAndMakeVisible(b);
@@ -1675,6 +1687,21 @@ void MainComponent::resetLayoutToDefaults() {
     settingsChanged(true);
 }
 
+// v0.6.8: Settings > Reset > "Reset settings to defaults" — the
+// FULL factory reset (core resetAllSettingsToDefaults), applied
+// live through the ordinary settings-changed path: theme, cells,
+// poll interval, link toggles and the fx pump all re-derive from
+// the defaulted state, the result persists, and the deferred
+// sheet rebuild (inside settingsChanged's watchlist path) makes
+// the open sheet show the factory values. The bar's current
+// window rect survives: saveSettings re-reads it into the state
+// as it persists, exactly like the Menu's "New Preset (defaults)".
+void MainComponent::resetSettingsToDefaults() {
+    tickerbar::resetAllSettingsToDefaults(state);
+    lastPresetName_.clear();
+    settingsChanged(true);
+}
+
 void MainComponent::rebuildSettingsDeferred() {
     // The settings content owns the very button whose click may have
     // triggered this (Remove/Add) — rebuilding it synchronously would
@@ -2343,7 +2370,14 @@ void MainComponent::drawVisualizerBackground(juce::Graphics& g) {
     // effect mode and the adopted opacity could never show through.
     // Unlinked/alone the base is the historical opaque black,
     // byte-for-byte the old render.
-    if (group != own)
+    // v0.6.8: "linked" is decided by LINK STATE (a live linked peer
+    // exists — BarLinkClient::hasLiveLinkedPeer), not by the
+    // v0.6.6 geometry test (group != own): a peer whose rect
+    // momentarily coincided with this bar's, or was not yet
+    // stamped, dropped the bar back to opaque black even though
+    // the adopted background had landed in state.
+    const bool linkedGroup = linkClient_.hasLiveLinkedPeer();
+    if (linkedGroup)
         fillStyledBackground(g, bounds.toFloat(), state.backgroundStyle, theme_,
                              juce::jlimit(0.15f, 1.0f, state.backgroundOpacity));
     else
@@ -2453,7 +2487,12 @@ void MainComponent::drawVisualizerBackground(juce::Graphics& g) {
     g.setOpacity(1.0f);
     // v0.4.0: a dark scrim over the whole effect — the darker,
     // moodier tone Jackson asked for; text stays on top of it.
-    g.setColour(juce::Colours::black.withAlpha(0.18f));
+    // v0.6.8: LINKED, the scrim scales with the shared opacity —
+    // it is drawn OVER the shared base, so at a low parent opacity
+    // an unscaled scrim kept darkening the bar as if opacity were
+    // still high and the bars stopped lining up. Unlinked the
+    // scrim is the historical 0.18, unchanged.
+    g.setColour(juce::Colours::black.withAlpha(linkedGroup ? 0.18f * op : 0.18f));
     g.fillRect(bounds);
 }
 void MainComponent::drawGlowBackground(juce::Graphics& g) {
@@ -2470,9 +2509,12 @@ void MainComponent::drawGlowBackground(juce::Graphics& g) {
     // background at the shared opacity (see drawVisualizerBackground;
     // SessionBar v0.4.14 twin); unlinked/alone it stays the
     // historical opaque black.
-    if (group != own)
-        fillStyledBackground(g, bounds.toFloat(), state.backgroundStyle, theme_,
-                             juce::jlimit(0.15f, 1.0f, state.backgroundOpacity));
+    // v0.6.8: "linked" from LINK STATE, not group geometry (see
+    // drawVisualizerBackground).
+    const bool linkedGroup = linkClient_.hasLiveLinkedPeer();
+    const float bgOp = juce::jlimit(0.15f, 1.0f, state.backgroundOpacity);
+    if (linkedGroup)
+        fillStyledBackground(g, bounds.toFloat(), state.backgroundStyle, theme_, bgOp);
     else
         g.fillAll(juce::Colours::black);
     const int iw = juce::jlimit(8, 240, bounds.getWidth() / 4);
@@ -2493,14 +2535,18 @@ void MainComponent::drawGlowBackground(juce::Graphics& g) {
             }
         }
     }
-    g.setOpacity(juce::jlimit(0.15f, 1.0f, state.backgroundOpacity));
+    g.setOpacity(bgOp);
     g.drawImage(glowCache_, bounds.toFloat());
     const float groupW = group.getWidth() > 0 ? (float)group.getWidth() : 1.f;
     g.setColour(juce::Colours::white);
     for (int lx = 0; lx < bounds.getWidth(); lx += 2) {
         const float gx = ((float)own.getX() + (float)lx - (float)group.getX()) / groupW;
         const float a = tickerbar::GlowField::pinstripe(gx);
-        if (a > 0.f) { g.setOpacity(a); g.drawVerticalLine(lx, 0.f, (float)bounds.getHeight()); }
+        // v0.6.8: LINKED, the pinstripes (drawn OVER the shared
+        // base, like the visualizer's scrim) scale with the shared
+        // opacity too — unscaled they stayed at full strength at a
+        // low parent opacity. Unlinked: historical strength.
+        if (a > 0.f) { g.setOpacity(linkedGroup ? a * bgOp : a); g.drawVerticalLine(lx, 0.f, (float)bounds.getHeight()); }
     }
     g.setOpacity(1.0f);
 }
