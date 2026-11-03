@@ -29,6 +29,25 @@ inline float offsetFor(float fontHeight) {
     return juce::jlimit(2.f, 7.f, fontHeight * 0.20f);
 }
 
+// WHITE RULE (v0.6.9 — Jackson, 2026-11-02 21:19 PT): "for all
+// the text if the front text is white make the back white." When
+// a label's own colour is white or near-white, the offset BACK
+// copy is drawn PURE WHITE — white text never gets a tinted or
+// contrasting backing. (The themes' text colours are tinted
+// whites, not pure white — without this rule the back copy
+// showed that tint behind the white face.) Coloured labels keep
+// their own colour as the back copy; the corrected geometry is
+// otherwise unchanged. Alpha always follows the caller's colour.
+inline bool isWhiteText(juce::Colour c) {
+    const int r = (int)c.getRed(), g = (int)c.getGreen(), b = (int)c.getBlue();
+    const int lo = juce::jmin(r, juce::jmin(g, b)), hi = juce::jmax(r, juce::jmax(g, b));
+    return lo >= 0xE0 && (hi - lo) <= 0x30;
+}
+inline juce::Colour backColourFor(juce::Colour colour) {
+    return isWhiteText(colour) ? juce::Colours::white.withAlpha(colour.getFloatAlpha())
+                               : colour;
+}
+
 // drawText with the pop. The caller sets the font first, exactly
 // as with Graphics::drawText — the offset derives from it. Both
 // copies keep the text colour's own alpha, so a dimmed (stale)
@@ -36,7 +55,7 @@ inline float offsetFor(float fontHeight) {
 inline void draw(juce::Graphics& g, const juce::String& text, juce::Rectangle<float> r,
                  juce::Justification j, juce::Colour colour) {
     const float off = offsetFor(g.getCurrentFont().getHeight());
-    g.setColour(colour);
+    g.setColour(backColourFor(colour));
     g.drawText(text, r.translated(off, off), j);
     g.setColour(juce::Colours::white.withAlpha(colour.getFloatAlpha()));
     g.drawText(text, r, j);
@@ -51,7 +70,7 @@ inline void draw(juce::Graphics& g, const juce::String& text, juce::Rectangle<in
 inline void drawFitted(juce::Graphics& g, const juce::String& text, juce::Rectangle<int> r,
                        juce::Justification j, int maxLines, float minScale, juce::Colour colour) {
     const int off = juce::roundToInt(offsetFor(g.getCurrentFont().getHeight()));
-    g.setColour(colour);
+    g.setColour(backColourFor(colour));
     g.drawFittedText(text, r.translated(off, off), j, maxLines, minScale);
     g.setColour(juce::Colours::white.withAlpha(colour.getFloatAlpha()));
     g.drawFittedText(text, r, j, maxLines, minScale);
