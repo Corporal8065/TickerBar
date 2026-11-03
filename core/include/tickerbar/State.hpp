@@ -52,6 +52,16 @@ struct TickerState {
     bool showBtcDominance = true;
     int fngCellWidth = 0;
     int domCellWidth = 0;
+    // v0.6.11: the rotation section the main strip shows (a
+    // RotationSection ordinal from Sections.hpp; 0 = Crypto, the
+    // watchlist — today's behaviour and the default). Appended field:
+    // settings files from older builds simply lack the key and load
+    // as Crypto. The context toggles above keep their fields and now
+    // govern which readings the TITLE-BAR rotator includes (the two
+    // readings left the main row in v0.6.11); fngCellWidth /
+    // domCellWidth are inert legacy extents, still persisted so old
+    // files round-trip untouched.
+    int rotationSection = 0;
 };
 
 // RESET LAYOUT TO DEFAULTS (v0.3.2, Vishona's request) — restores

@@ -14,6 +14,7 @@ target_sources(TickerBar PRIVATE
     Source/MainComponent.cpp
     Source/PriceClient.cpp
     Source/ContextClient.cpp
+    Source/SectionClient.cpp
     Source/ScreenSpace.cpp
     Source/ToastNotifier.cpp)
 target_include_directories(TickerBar PRIVATE Source ${CMAKE_CURRENT_SOURCE_DIR}/../core/include

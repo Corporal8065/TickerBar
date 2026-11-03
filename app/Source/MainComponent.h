@@ -18,6 +18,8 @@
 #include "TextPop.h" // v0.6.8: corrected-geometry text pop (colour behind bottom-right, white in front)
 #include "PriceClient.h"
 #include "ContextClient.h"
+#include "SectionClient.h" // v0.6.11: rotation-section poller
+#include <tickerbar/Sections.hpp> // v0.6.11: section tables + cell defs
 #include "ScreenSpace.h"
 #include "ClickPlayer.h"
 #include "ClickSounds.h"
@@ -26,7 +28,8 @@
 #include "Updater.h"
 #include "UpdaterConfig.h"
 class CoinCell;
-class ContextCell;
+class QuoteCell;
+class TitleContextCell;
 class TickerSettingsWindow;
 class MascotView;
 class CellSplitter;
@@ -168,8 +171,11 @@ public:
     int  symbolCellWidth(const std::string& symbol) const; // v0.5.6: Sizes panel read — stored explicit width, 0 = auto
     void setSymbolCellWidth(const std::string& symbol, int px); // v0.5.6: Sizes panel write — the SAME cellWidths store the dividers drag
     void resetSymbolCellWidths();       // v0.5.6: Sizes panel reset — every symbol back to auto width (v0.5.9: context widths too)
-    int  contextCellWidth(bool fng) const; // v0.5.9: Sizes panel read — stored fng/dom cell width, 0 = default extent
-    void setContextCellWidth(bool fng, int px); // v0.5.9: Sizes panel write — the SAME fng/dom fields the context dividers drag
+    // v0.6.11: the rotation section (Settings combo + Menu both land
+    // here): persists the choice, rebuilds the section cells when it
+    // changed, reflows. rotationSection() is the clamped live value.
+    int  rotationSection() const { return juce::jlimit(0, tickerbar::kRotationSectionCount - 1, state.rotationSection); }
+    void setRotationSection(int idx);
     void onBgLinkToggled();             // v0.5.6: Settings "Link background" flipped — re-stamp for peers when it turns on
     void rebuildSettingsDeferred();
     void notifyWindowGeometryChanged(); // MainWindow moved/resized feed (reserve-machine events, v0.2.0)
@@ -191,10 +197,11 @@ private:
     void timerCallback() override;
     void rebuildCells();
     void rebuildSplitters();
-    void onContextSplitterDrag(bool coinsPair, int delta); // coinsPair: A (coins<->context); else B (FNG<->DOM)
+    void rebuildSectionCells(); // v0.6.11: (re)build the quote cells for the current section
     void onTrailingSplitterDrag(int delta); // v0.3.2: the bar-end divider — resizes the window along the bar axis
     void refreshData();
-    void refreshContext();
+    void refreshSections();     // v0.6.11: SectionClient -> quote cells
+    void refreshContext();      // the title-bar rotator's two faces (ContextClient)
     void refreshStatus();
     void syncScreenSpace();
     void saveSettings();
@@ -240,7 +247,16 @@ private:
     Theme theme_ = midnightKidsTheme();
     PriceClient client_;
     ContextClient contextClient_;
-    std::unique_ptr<ContextCell> fngCell_, domCell_;
+    SectionClient sectionClient_; // v0.6.11
+    // v0.6.11: Fear & Greed + BTC dominance live HERE now — one
+    // small rotating cell in the title bar (see TitleContextCell).
+    std::unique_ptr<TitleContextCell> titleCtx_;
+    // v0.6.11: the current section's quote cells + their defs
+    // (empty in the Crypto section, where cells_ rules).
+    std::vector<std::unique_ptr<QuoteCell>> quoteCells_;
+    std::vector<tickerbar::SectionCellDef> sectionDefs_;
+    int builtSection_ = -1;      // the section quoteCells_ were built for
+    double titleFlipClock_ = 0.0; // dwell accumulator for the rotator (4 Hz timer)
     std::unique_ptr<MascotView> mascot_;
     BarLinkClient linkClient_{ tickerbar::kLinkAppTicker }; // v0.2.0 (k)
     ScreenSpace screenSpace_;
@@ -250,13 +266,9 @@ private:
     ClickSounds clicks_;
     std::vector<std::unique_ptr<CoinCell>> cells_;
     std::vector<std::unique_ptr<CellSplitter>> splitters_;
-    // Context-cell dividers (post-v0.3.0): A divides the coin block
-    // from the nearest visible context cell, B divides Fear & Greed
-    // from BTC dominance. Created once; resized() places them and
-    // drives their visibility from the show* toggles.
-    std::unique_ptr<CellSplitter> ctxSplitA_, ctxSplitB_;
     // Trailing divider (v0.3.2): sits right of the last coin cell
-    // when NO context cell follows it; dragging it resizes the
+    // (v0.6.11: now the standing case — the context cells it used
+    // to alternate with left the row for the title bar); dragging it resizes the
     // window along the bar axis and the solver's fill rule hands
     // the change to the last coin cell.
     std::unique_ptr<CellSplitter> trailSplit_;

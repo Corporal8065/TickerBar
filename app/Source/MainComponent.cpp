@@ -242,49 +242,193 @@ private:
     juce::int64 flashUntilMs = 0;
 };
 
+// QuoteCell — one rotation-section cell (v0.6.11): an index/ETF/
+// stock quote, a FRED yield, or a computed Internals proxy. Same
+// visual language and stale honesty as a CoinCell, but the change
+// figure is the DAY change (the crypto cells' "1h" figure comes
+// from hourly candles these sources do not have — nothing here may
+// wear that label). Text arrives pre-formatted from
+// MainComponent::refreshSections; every element draws SINGLE
+// (v0.6.10 rule). A press drags the window via the same arbitration
+// as the context cells used; quote cells have no click action.
 // =====================================================================
-// ContextCell — one market-context reading (Fear & Greed / BTC
-// dominance). Same visual language and stale honesty as a CoinCell:
-// greyed at 0.55 alpha with a STALE tag when the value is older than
-// the core context threshold; "--" until the first real value lands.
-// =====================================================================
-class ContextCell : public juce::Component, public juce::SettableTooltipClient {
+class QuoteCell : public juce::Component, public juce::SettableTooltipClient {
 public:
     MainComponent* owner = nullptr;
-    juce::String title, valueText, subText;
-    juce::Colour valueColour;
+    juce::String title, valueText, pctText, subText;
+    juce::Colour pctColour, lineColour;
+    std::vector<double> series;
     bool has = false, stale = false;
-    bool fngLink = false; // Fear & Greed cell only: a click opens the index page (v0.2.0 item d)
-    explicit ContextCell(MainComponent* o) : owner(o) {}
-    void setData(const juce::String& v, const juce::String& sub, juce::Colour col, bool isStale) {
-        if (v == valueText && sub == subText && col == valueColour && isStale == stale && has) { repaint(); return; }
-        valueText = v; subText = sub; valueColour = col; stale = isStale; has = true; repaint();
+    explicit QuoteCell(MainComponent* o) : owner(o) {}
+    void setData(const juce::String& v, const juce::String& pct, juce::Colour pctCol,
+                 const juce::String& sub, std::vector<double> ser, juce::Colour lineCol, bool isStale) {
+        if (v == valueText && pct == pctText && sub == subText && pctCol == pctColour &&
+            lineCol == lineColour && ser == series && isStale == stale && has) { repaint(); return; }
+        valueText = v; pctText = pct; pctColour = pctCol; subText = sub;
+        series = std::move(ser); lineColour = lineCol; stale = isStale; has = true; repaint();
+    }
+    void setWaiting(const juce::String& sub) {
+        if (!has && sub == subText) { repaint(); return; }
+        has = false; stale = false; valueText.clear(); pctText.clear();
+        subText = sub; series.clear(); repaint();
     }
     void mouseDown(const juce::MouseEvent& e) override { owner->cellDragBegin(this, e); }
     void mouseDrag(const juce::MouseEvent& e) override { owner->cellDragMove(this, e); }
-    void mouseUp(const juce::MouseEvent& e) override {
-        if (owner->cellDragEnd(this, e)) return;
-        if (fngLink && e.getDistanceFromDragStart() < 5 && e.mouseWasClicked())
-            juce::URL("https://alternative.me/crypto/fear-and-greed-index/").launchInDefaultBrowser();
-    }
+    void mouseUp(const juce::MouseEvent& e) override { owner->cellDragEnd(this, e); }
     void paint(juce::Graphics& g) override {
         const auto& th = owner->theme();
         auto b = getLocalBounds().toFloat().reduced(1.f);
         const float alpha = stale ? 0.55f : 1.0f;
-        // v0.4.0: transparent background like the coin cells (border only).
+        // v0.4.0 rule, shared with the coin cells: border only.
         g.setColour(th.border.withAlpha(alpha));
         g.drawRoundedRectangle(b, 8.f, 1.f);
         auto r = b.reduced(9.f, 5.f);
-        // v0.6.10: single draw, same as the coin cells (TextPop.h).
-        g.setFont(juce::Font(9.f, juce::Font::bold));
-        textpop::drawSingle(g, title, r.removeFromTop(12.f), juce::Justification::centredLeft, th.dim.withAlpha(alpha));
+        // top row: title (left) + day-change % (right), the core
+        // never-truncate layout — the % reserves in full, the title clips.
+        auto top = r.removeFromTop(18.f);
+        const juce::Font titleFont(13.5f, juce::Font::bold), pctFont(12.5f, juce::Font::bold);
+        auto lay = tickerbar::coinCellTopRow((int)top.getWidth(),
+                                             (int)std::ceil(titleFont.getStringWidthFloat(title)),
+                                             pctText.isEmpty() ? 0 : (int)std::ceil(pctFont.getStringWidthFloat(pctText)));
+        g.setFont(titleFont);
+        textpop::drawSingle(g, title, top.removeFromLeft((float)lay.symbolW), juce::Justification::centredLeft, th.text.withAlpha(alpha));
+        top.removeFromLeft((float)lay.gap);
+        if (pctText.isNotEmpty()) {
+            g.setFont(pctFont);
+            textpop::drawSingle(g, pctText, top.removeFromLeft((float)lay.pctW), juce::Justification::centredRight, pctColour.withAlpha(alpha));
+        }
+        // value row
         g.setFont(juce::Font(16.5f, juce::Font::bold));
-        textpop::drawSingle(g, has ? valueText : juce::String("--"), r.removeFromTop(24.f), juce::Justification::centredLeft, (has ? valueColour : th.dim).withAlpha(alpha));
-        g.setFont(10.5f);
-        textpop::drawSingle(g, has ? subText : juce::String("loading..."), r, juce::Justification::centredLeft, th.dim.withAlpha(alpha));
+        textpop::drawSingle(g, has ? valueText : juce::String("--"), r.removeFromTop(24.f),
+                            juce::Justification::centredLeft, (has ? th.text : th.dim).withAlpha(alpha));
+        // bottom: sparkline when a series exists (the sub line — a
+        // yield's observation date — keeps a small strip under it),
+        // else the sub line alone (day range / "computed proxy" /
+        // waiting state).
+        if (series.size() >= 2) {
+            auto area = r;
+            if (subText.isNotEmpty()) area.removeFromBottom(11.f);
+            auto norm = tickerbar::normalizeSeries(series);
+            juce::Path p;
+            auto drawArea = area.reduced(0.f, 1.f);
+            for (size_t i = 0; i < norm.size(); ++i) {
+                float x = drawArea.getX() + drawArea.getWidth() * (float)i / (float)(norm.size() - 1);
+                float y = drawArea.getBottom() - norm[i] * drawArea.getHeight();
+                if (i == 0) p.startNewSubPath(x, y); else p.lineTo(x, y);
+            }
+            auto lineCol = lineColour.withAlpha(0.9f * alpha);
+            juce::Path fill = p;
+            fill.lineTo(drawArea.getRight(), drawArea.getBottom()); fill.lineTo(drawArea.getX(), drawArea.getBottom()); fill.closeSubPath();
+            g.setColour(lineCol.withAlpha(0.16f)); g.fillPath(fill);
+            g.setColour(lineCol); g.strokePath(p, juce::PathStrokeType(1.4f));
+            if (subText.isNotEmpty()) {
+                g.setFont(8.5f);
+                textpop::drawSingle(g, subText, r.removeFromBottom(11.f), juce::Justification::centredLeft, th.dim.withAlpha(alpha));
+            }
+        } else {
+            g.setFont(10.5f);
+            textpop::drawSingle(g, has ? subText : (subText.isEmpty() ? juce::String("waiting for data...") : subText),
+                                r, juce::Justification::centredLeft, th.dim.withAlpha(alpha));
+        }
         if (stale && has) {
             g.setFont(juce::Font(9.f, juce::Font::bold));
             textpop::drawSingle(g, juce::String("STALE"), b.reduced(7.f, 4.f), juce::Justification::bottomRight, th.warn);
+        }
+    }
+};
+
+// =====================================================================
+// TitleContextCell — the v0.6.11 title-bar context rotator: Fear &
+// Greed and BTC dominance merged into ONE small cell living in the
+// title bar between the left cluster and the top-right icons (they
+// left the main row — Jackson's ask). The two readings rotate on
+// the core dwell (kTitleContextRotateSec, driven by the owner's
+// 4 Hz timer); when only one reading is enabled in Settings the
+// cell is static on it. Same stale honesty as every cell: dimmed
+// at 0.55 alpha with a STALE tag on the context clock. On the
+// Fear & Greed face a click still opens the index page (the
+// v0.2.0 click-through behaviour, preserved). Single-draw text
+// (v0.6.10 rule — it is a cell, not toolbar furniture).
+// =====================================================================
+class TitleContextCell : public juce::Component, public juce::SettableTooltipClient {
+public:
+    MainComponent* owner = nullptr;
+    explicit TitleContextCell(MainComponent* o) : owner(o) { syncFaceChrome(); }
+    void setReading(bool fng, const juce::String& v, const juce::String& sub, juce::Colour col,
+                    bool hasValue, bool isStale) {
+        Face& f = fng ? fng_ : dom_;
+        f.value = v; f.sub = sub; f.colour = col; f.has = hasValue; f.stale = isStale;
+        if (fng == showingFng_) repaint();
+    }
+    void setIncluded(bool fngIn, bool domIn) {
+        fngIn_ = fngIn; domIn_ = domIn;
+        if (showingFng_ && !fngIn_ && domIn_) showingFng_ = false;
+        if (!showingFng_ && !domIn_ && fngIn_) showingFng_ = true;
+        syncFaceChrome(); repaint();
+    }
+    void flip() {
+        if (!fngIn_ || !domIn_) return;
+        showingFng_ = !showingFng_;
+        syncFaceChrome(); repaint();
+    }
+    bool showingFng() const { return showingFng_; }
+    void mouseDown(const juce::MouseEvent& e) override { owner->cellDragBegin(this, e); }
+    void mouseDrag(const juce::MouseEvent& e) override { owner->cellDragMove(this, e); }
+    void mouseUp(const juce::MouseEvent& e) override {
+        if (owner->cellDragEnd(this, e)) return;
+        if (showingFng_ && fng_.has && e.getDistanceFromDragStart() < 5 && e.mouseWasClicked())
+            juce::URL("https://alternative.me/crypto/fear-and-greed-index/").launchInDefaultBrowser();
+    }
+    void paint(juce::Graphics& g) override {
+        const auto& th = owner->theme();
+        const Face& f = showingFng_ ? fng_ : dom_;
+        auto b = getLocalBounds().toFloat().reduced(1.f);
+        const float alpha = f.stale ? 0.55f : 1.0f;
+        g.setColour(th.border.withAlpha(alpha));
+        g.drawRoundedRectangle(b, 6.f, 1.f);
+        const juce::String title = showingFng_ ? "FEAR & GREED" : "BTC DOMINANCE";
+        const juce::String value = f.has ? f.value : "--";
+        const juce::String sub = f.has ? f.sub : "loading...";
+        auto r = b.reduced(8.f, 2.f);
+        if (getHeight() >= 28) {
+            // two-line form (the 30 px horizontal toolbar strip)
+            g.setFont(juce::Font(8.5f, juce::Font::bold));
+            textpop::drawSingle(g, title, r.removeFromTop(10.f), juce::Justification::centredLeft, th.dim.withAlpha(alpha));
+            auto row = r;
+            const juce::Font valFont(13.5f, juce::Font::bold);
+            const int vw = (int)std::ceil(valFont.getStringWidthFloat(value)) + 2;
+            g.setFont(valFont);
+            textpop::drawSingle(g, value, row.removeFromLeft((float)vw), juce::Justification::centredLeft, (f.has ? f.colour : th.dim).withAlpha(alpha));
+            g.setFont(9.5f);
+            textpop::drawSingle(g, sub, row, juce::Justification::centredLeft, th.dim.withAlpha(alpha));
+        } else {
+            // single-line form (the vertical stack's title row)
+            const juce::Font titleFont(8.5f, juce::Font::bold), valFont(12.5f, juce::Font::bold);
+            const int tw = (int)std::ceil(titleFont.getStringWidthFloat(title)) + 7;
+            const int vw = (int)std::ceil(valFont.getStringWidthFloat(value)) + 7;
+            g.setFont(titleFont);
+            textpop::drawSingle(g, title, r.removeFromLeft((float)tw), juce::Justification::centredLeft, th.dim.withAlpha(alpha));
+            g.setFont(valFont);
+            textpop::drawSingle(g, value, r.removeFromLeft((float)vw), juce::Justification::centredLeft, (f.has ? f.colour : th.dim).withAlpha(alpha));
+            g.setFont(9.5f);
+            textpop::drawSingle(g, sub, r, juce::Justification::centredLeft, th.dim.withAlpha(alpha));
+        }
+        if (f.stale && f.has) {
+            g.setFont(juce::Font(8.f, juce::Font::bold));
+            textpop::drawSingle(g, juce::String("STALE"), b.reduced(5.f, 2.f), juce::Justification::bottomRight, th.warn);
+        }
+    }
+private:
+    struct Face { juce::String value, sub; juce::Colour colour; bool has = false, stale = false; };
+    Face fng_, dom_;
+    bool showingFng_ = true, fngIn_ = true, domIn_ = true;
+    void syncFaceChrome() {
+        if (showingFng_) {
+            setTooltip("Crypto Fear & Greed Index - alternative.me. Updates about daily; polled every 5 minutes. Click to open the index page.");
+            setMouseCursor(fng_.has ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+        } else {
+            setTooltip("BTC share of total crypto market cap - CoinGecko global. Polled every 5 minutes.");
+            setMouseCursor(juce::MouseCursor::NormalCursor);
         }
     }
 };
@@ -566,15 +710,21 @@ public:
             y_ += 30;
             note("Any Coinbase USD pair, plus HYPE (served by CoinGecko). Validated against the live coin list.");
         });
-        panel("Context cells", [&]{
-            toggle("Show Fear & Greed cell", st->showFearGreed, [&](bool b){ st->showFearGreed = b; });
-            toggle("Show BTC dominance cell", st->showBtcDominance, [&](bool b){ st->showBtcDominance = b; });
-            note("The two market-context cells at the end of the bar (Vishona's request). Drag the divider beside a context cell to change its width - the width is remembered, like the coin cells.");
+        panel("Rotation", [&]{
+            combo("Section", {"Crypto (watchlist)", "ETFs & Indexes", "Top 100 S&P stocks", "Bonds", "Market Internals"},
+                  owner->rotationSection(),
+                  [&](int v){ owner->setRotationSection(v); });
+            note("What the main strip shows (also in the bar's Menu > Rotation). The non-crypto sections are keyless public data: index / ETF / stock quotes and bond ETFs from CNBC, Treasury yields from FRED (daily - each yield cell prints its observation date), sparklines from Yahoo daily closes. Market Internals figures are computed proxies from the Top 100 quotes, not official exchange breadth.");
+        });
+        panel("Title bar context", [&]{
+            toggle("Show Fear & Greed in the title bar", st->showFearGreed, [&](bool b){ st->showFearGreed = b; });
+            toggle("Show BTC dominance in the title bar", st->showBtcDominance, [&](bool b){ st->showBtcDominance = b; });
+            note("Fear & Greed and BTC dominance share one small cell in the title bar, rotating every few seconds when both are on (v0.6.11 - they used to be full cells at the end of the bar). If the title bar gets too narrow the cell hides rather than crushing the wordmark or the icons. A click on the Fear & Greed face still opens the index page.");
             button("Reset layout to defaults", [this]{ owner->resetLayoutToDefaults(); });
             note("Layout only: every cell shown again, all dragged cell widths forgotten, coin order back to BTC / ETH / HYPE. Your coins, alerts, theme and poll settings are kept.");
         });
         panel("Sizes", [&]{
-            note("One slider per coin, plus the two context cells - the same widths the dividers on the bar drag, so the two always agree. Applies live, whether the bar is scrolling or still. A cell with no width set shares the space automatically (auto).");
+            note("One slider per coin - the same widths the dividers on the bar drag, so the two always agree. Applies live, whether the bar is scrolling or still. A cell with no width set shares the space automatically (auto).");
             for (auto& sym : st->watchlist) {
                 const int stored = owner->symbolCellWidth(sym);
                 auto* l = add(new juce::Label({}, juce::String(sym)));
@@ -592,33 +742,6 @@ public:
                 s->onValueChange = [this, s, ro, sym]{
                     const int px = (int)(s->getValue() + 0.5);
                     owner->setSymbolCellWidth(sym, px);
-                    ro->setText(juce::String(px) + " px", juce::dontSendNotification);
-                };
-                y_ += 26;
-            }
-            // v0.5.9: the two context cells get rows too — the same
-            // state fields (fngCellWidth / domCellWidth) the divider
-            // beside each context cell drags, so panel and dividers
-            // agree here as well. Stored 0 = the default extent.
-            for (auto& cx : { std::pair<const char*, bool>{ "Fear & Greed cell", true },
-                              std::pair<const char*, bool>{ "BTC dominance cell", false } }) {
-                const bool fng = cx.second;
-                const int stored = owner->contextCellWidth(fng);
-                auto* l = add(new juce::Label({}, juce::String(cx.first)));
-                l->setFont(juce::Font(12.5f, juce::Font::bold));
-                l->setColour(juce::Label::textColourId, settingsPalette::text());
-                l->setBounds(24, y_, 150, 22);
-                auto* s = add(new juce::Slider());
-                s->setRange(tickerbar::kContextCellMin, tickerbar::kContextCellMax, 1.0);
-                s->setValue(stored > 0 ? stored : tickerbar::kContextCellDefaultW, juce::dontSendNotification);
-                s->setBounds(182, y_, 300, 22);
-                auto* ro = add(new juce::Label({}, stored > 0 ? juce::String(stored) + " px" : juce::String("auto")));
-                ro->setFont(11.f);
-                ro->setColour(juce::Label::textColourId, settingsPalette::dimText());
-                ro->setBounds(492, y_, 90, 22);
-                s->onValueChange = [this, s, ro, fng]{
-                    const int px = (int)(s->getValue() + 0.5);
-                    owner->setContextCellWidth(fng, px);
                     ro->setText(juce::String(px) + " px", juce::dontSendNotification);
                 };
                 y_ += 26;
@@ -719,7 +842,8 @@ public:
             note("TickerBar " + kVersion + " - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
             note("Detail chart: candlesticks + volume with 24h / 7d / 30d ranges. Coinbase caps one candles request at 300: 24h/7d are hourly, 30d is daily. CoinGecko (HYPE) supplies hourly closes only - no OHLC, no volume, no 30d - and the chart note says so.");
             note("Polls every N seconds (Window panel). If the feed drops, cells grey out and keep the last real prices, marked STALE - never fake-fresh numbers.");
-            note("Context cells: Fear & Greed index (alternative.me) and BTC dominance (CoinGecko) poll separately every ~5 minutes and go stale on their own clock - they never block prices.");
+            note("Title bar: Fear & Greed index (alternative.me) and BTC dominance (CoinGecko) share one rotating cell in the title bar, poll separately every ~5 minutes and go stale on their own clock - they never block prices.");
+            note("Rotation sections: ETFs & Indexes, Top 100 S&P stocks, Bonds and Market Internals ride keyless public sources (CNBC quotes, FRED yields, Yahoo daily closes) on their own poller - a section outage never blocks prices. Market Internals are computed proxies from the Top 100 quotes, labelled as such - never official exchange breadth.");
             note("Made with JUCE.");
         });
         setSize(700, y_ + 8);
@@ -948,33 +1072,18 @@ MainComponent::MainComponent() {
     settingsWin_->content.onWatchlistChanged = [this]{ settingsChanged(true); };
     settingsWin_->content.build();
 
-    fngCell_ = std::make_unique<ContextCell>(this);
-    fngCell_->title = "FEAR & GREED";
-    fngCell_->fngLink = true;
-    fngCell_->setMouseCursor(juce::MouseCursor::PointingHandCursor);
-    fngCell_->setTooltip("Crypto Fear & Greed Index - alternative.me. Updates about daily; polled every 5 minutes. Click to open the index page.");
-    domCell_ = std::make_unique<ContextCell>(this);
-    domCell_->title = "BTC DOMINANCE";
-    domCell_->setTooltip("BTC share of total crypto market cap - CoinGecko global. Polled every 5 minutes.");
-    addAndMakeVisible(fngCell_.get());
-    addAndMakeVisible(domCell_.get());
+    // v0.6.11: the two context readings live in the TITLE BAR now,
+    // merged into one small rotating cell (Jackson's ask) — the
+    // row cells and their dividers (post-v0.3.0) are gone. The
+    // show* toggles survive and govern which readings the rotator
+    // includes; resized() places the cell and hides it when the
+    // title bar is too narrow (core titleContextExtent).
+    titleCtx_ = std::make_unique<TitleContextCell>(this);
+    addAndMakeVisible(titleCtx_.get());
 
-    // Post-v0.3.0: dividers for the context cells — A between the
-    // coin block and the nearest visible context cell, B between
-    // Fear & Greed and BTC dominance. Same CellSplitter +
-    // adjustPairWidths machinery as the coin dividers; resized()
-    // places them and drives visibility from the show* toggles.
-    ctxSplitA_ = std::make_unique<CellSplitter>();
-    ctxSplitA_->owner = this;
-    ctxSplitA_->onDragDelta = [this](int, int delta) { onContextSplitterDrag(true, delta); };
-    addChildComponent(ctxSplitA_.get());
-    ctxSplitB_ = std::make_unique<CellSplitter>();
-    ctxSplitB_->owner = this;
-    ctxSplitB_->onDragDelta = [this](int, int delta) { onContextSplitterDrag(false, delta); };
-    addChildComponent(ctxSplitB_.get());
     // v0.3.2: the trailing divider — right of the last coin cell
-    // when both context cells are hidden (where divider A used to
-    // vanish with them). Dragging it resizes the window along the
+    // (v0.6.11: the standing case, now that no context cell can
+    // follow the coins). Dragging it resizes the window along the
     // bar axis; resized() places it and drives its visibility.
     trailSplit_ = std::make_unique<CellSplitter>();
     trailSplit_->owner = this;
@@ -988,13 +1097,17 @@ MainComponent::MainComponent() {
     applyTheme();
     state.windowW = std::max(state.windowW, 160); // v0.4.0: free resize (Jackson's ask) — the old supported-width floor is gone; overflow scrolls instead
     rebuildCells();
+    rebuildSectionCells(); // v0.6.11: no-op in the Crypto section
     client_.setWatchlist(state.watchlist);
     client_.setPollSec(state.pollSec);
     client_.onUpdate = [this]{ refreshData(); };
     client_.startPolling();
     contextClient_.onUpdate = [this]{ refreshContext(); };
     contextClient_.startPolling();
+    sectionClient_.onUpdate = [this]{ refreshSections(); };
+    sectionClient_.startPolling();
     refreshContext();
+    refreshSections();
     syncScreenSpace();
     syncFxPump();
     startTimerHz(4);
@@ -1008,6 +1121,7 @@ MainComponent::~MainComponent() {
     saveSettings();
     screenSpace_.release();
     contextClient_.stopThread(4500);
+    sectionClient_.stopThread(4500);
     client_.stopThread(4500);
 }
 
@@ -1039,17 +1153,21 @@ void MainComponent::resized() {
     auto btnVisible = [this](juce::TextButton* b) { return b != &updateBtn_ || updateAvailable_; };
     updateBtn_.setVisible(updateAvailable_);
     auto r = area.reduced(8, 6);
-    const int n = (int)cells_.size();
+    const bool crypto = rotationSection() == (int)tickerbar::RotationSection::Crypto;
+    const int n = crypto ? (int)cells_.size() : 0;
     const bool anime = state.themeName == "Anime";
-    // Context-cell visibility (post-v0.3.0 toggles): hidden cells
-    // and their dividers take no space in either orientation.
-    const bool showF = state.showFearGreed && fngCell_ != nullptr;
-    const bool showD = state.showBtcDominance && domCell_ != nullptr;
-    if (fngCell_) fngCell_->setVisible(showF);
-    if (domCell_) domCell_->setVisible(showD);
-    if (ctxSplitA_) ctxSplitA_->setVisible((showF || showD) && n > 0);
-    if (ctxSplitB_) ctxSplitB_->setVisible(showF && showD);
-    if (trailSplit_) trailSplit_->setVisible(n > 0 && !showF && !showD); // v0.3.2: only when nothing follows the coins
+    // v0.6.11: only the active section's cells show — the coin
+    // machinery (cells + dividers) in Crypto, the quote cells in a
+    // rotation section. The splitters start hidden here; the
+    // fitted/marquee placement below re-shows the live ones. The
+    // context readings' visibility is the title rotator's business
+    // (the title-strip layout further down), driven by the same
+    // show* toggles as before.
+    for (auto& c : cells_) c->setVisible(crypto);
+    for (auto& sp : splitters_) sp->setVisible(false);
+    for (auto& c : quoteCells_) c->setVisible(!crypto);
+    if (trailSplit_) trailSplit_->setVisible(crypto && n > 0); // v0.3.2: nothing follows the coins any more
+    const bool rotWanted = titleCtx_ != nullptr && (state.showFearGreed || state.showBtcDominance);
     if (!vertical_) {
         // ---- horizontal: 30 px toolbar strip across the top ----
         auto strip = r.removeFromTop(30);
@@ -1066,6 +1184,19 @@ void MainComponent::resized() {
         strip.removeFromLeft(24); // the status dot's space
         wordmark_.setBounds(strip.removeFromLeft(92).withSizeKeepingCentre(92, 20));
         versionLabel_.setBounds(strip.removeFromLeft(44).withSizeKeepingCentre(44, 14));
+        // v0.6.11: the title-bar context rotator sits in the middle
+        // span, against the icon cluster, when the core room rule
+        // grants it space (titleContextExtent — below the minimum
+        // it hides rather than crushing either cluster); the
+        // status label keeps what remains of the span.
+        if (rotWanted) {
+            const int ext = tickerbar::titleContextExtent(strip.getWidth());
+            if (ext > 0) {
+                titleCtx_->setVisible(true);
+                titleCtx_->setBounds(strip.removeFromRight(ext).withSizeKeepingCentre(ext, 26));
+                strip.removeFromRight(6);
+            } else titleCtx_->setVisible(false);
+        } else if (titleCtx_) titleCtx_->setVisible(false);
         statusLabel_.setBounds(strip.withSizeKeepingCentre(strip.getWidth(), 14));
         r.removeFromTop(4);
         // ---- cells row ----
@@ -1079,9 +1210,9 @@ void MainComponent::resized() {
         // holds the scroll — after Jackson's field report that the
         // update had taken per-symbol sizing away (the v0.4.0 rule
         // hid every splitter for the whole marquee phase). The
-        // context/trailing dividers still hide: their cells are
-        // scroll items here, and their sizing returns with the
-        // fitted layout when the strip fits again.
+        // trailing divider still hides: its sizing returns with
+        // the fitted layout when the strip fits again. (v0.6.11:
+        // the context dividers are gone with their cells.)
         {
             auto items = stripItems();
             std::vector<int> ext;
@@ -1090,19 +1221,17 @@ void MainComponent::resized() {
             marqueeCycle_ = marqueeActive_ ? tickerbar::marqueeCycle(ext, 16) : 0;
             if (marqueeActive_) {
                 stripRect_ = r;
-                if (ctxSplitA_) ctxSplitA_->setVisible(false);
-                if (ctxSplitB_) ctxSplitB_->setVisible(false);
                 if (trailSplit_) trailSplit_->setVisible(false);
                 positionStrip();
             }
         }
         if (!marqueeActive_) {
-        // Context cells at the right end (DOM outermost, then
-        // FNG), each visible one at its effective width with a
-        // draggable divider on its inner side — the coin-divider
-        // idiom (16 px boundary: 3 air + 10 grip + 3 air), placed
-        // right-to-left. A divides coins from the nearest context
-        // cell; B divides FNG from DOM.
+        // The trailing divider at the coin block's right edge, in
+        // the coin-divider idiom (16 px boundary: 3 air + 10 grip
+        // + 3 air). v0.6.11: it is the standing case now (the
+        // context cells it used to alternate with live in the
+        // title bar), reserving the same 16 px boundary before
+        // the coins solve, so the last coin fills up to IT.
         auto ctxBoundary = [&](CellSplitter* sp) {
             r.removeFromRight(3);
             sp->verticalBar = false;
@@ -1110,20 +1239,7 @@ void MainComponent::resized() {
             sp->setBounds(sb.getX(), r.getY(), 10, r.getHeight());
             r.removeFromRight(3);
         };
-        if (showD) {
-            domCell_->setBounds(r.removeFromRight(tickerbar::contextCellExtent(state.domCellWidth, false)));
-            if (showF) ctxBoundary(ctxSplitB_.get());
-            else if (n > 0) ctxBoundary(ctxSplitA_.get());
-        }
-        if (showF) {
-            fngCell_->setBounds(r.removeFromRight(tickerbar::contextCellExtent(state.fngCellWidth, false)));
-            if (n > 0) ctxBoundary(ctxSplitA_.get());
-        }
-        // v0.3.2: both context cells hidden — the trailing divider
-        // takes divider A's place at the coin block's right edge,
-        // reserving the same 16 px boundary before the coins solve,
-        // so the last coin fills up to IT (never past it).
-        if (!showF && !showD && n > 0) ctxBoundary(trailSplit_.get());
+        if (crypto && n > 0) ctxBoundary(trailSplit_.get());
         if (n > 0) {
             const int boundary = 16; // 10 px splitter + 6 px air
             std::vector<int> expl((size_t)n, 0);
@@ -1142,6 +1258,21 @@ void MainComponent::resized() {
                     splitters_[(size_t)i]->setBounds(x + 3, r.getY(), 10, r.getHeight());
                 }
                 x += boundary;
+            }
+        }
+        // v0.6.11: a rotation section's fitted layout — the quote
+        // cells share the strip like coins (the core solver, no
+        // stored widths, no dividers), each CAPPED at 190 px: a
+        // 4-cell section on an ultrawide must not sprawl.
+        if (!crypto && !quoteCells_.empty()) {
+            const int m = (int)quoteCells_.size();
+            std::vector<int> zeros((size_t)m, 0);
+            auto widths = tickerbar::solveCellWidths(r.getWidth(), 16, zeros, 110);
+            int x = r.getX();
+            for (int i = 0; i < m; ++i) {
+                const int w = std::min(widths[(size_t)i], 190);
+                quoteCells_[(size_t)i]->setBounds(x, r.getY(), w, r.getHeight());
+                x += w + 16;
             }
         }
         } // !marqueeActive_
@@ -1164,6 +1295,16 @@ void MainComponent::resized() {
             bx += bw.w + 4;
         }
         r.removeFromTop(by - r.getY() + 28);
+        // v0.6.11: the title-bar context rotator gets its own row
+        // under the cluster when the bar is wide enough to hold it
+        // (the same core minimum as the horizontal strip; narrower
+        // and it hides rather than crushing the row).
+        if (rotWanted && r.getWidth() >= tickerbar::kTitleContextMinPx) {
+            titleCtx_->setVisible(true);
+            const int tw = std::min(r.getWidth(), tickerbar::kTitleContextMaxPx);
+            titleCtx_->setBounds(r.getX(), r.getY(), tw, 24);
+            r.removeFromTop(28);
+        } else if (titleCtx_) titleCtx_->setVisible(false);
         // v0.4.0 overflow marquee, vertical form: when the stack's
         // natural height overflows the room, it scrolls in a loop
         // (positionStrip) and the fitted stack below is skipped.
@@ -1178,9 +1319,7 @@ void MainComponent::resized() {
                 stripRect_ = { r.getX(), r.getY(), r.getWidth(), avail };
                 // v0.5.4: coin dividers stay live in the scroll, as
                 // in the horizontal branch — positionStrip places
-                // them; only the context/trailing dividers hide.
-                if (ctxSplitA_) ctxSplitA_->setVisible(false);
-                if (ctxSplitB_) ctxSplitB_->setVisible(false);
+                // them; only the trailing divider hides.
                 if (trailSplit_) trailSplit_->setVisible(false);
                 positionStrip();
                 if (anime && mascot_) mascot_->setBounds(r.getX(), r.getBottom() - 96, r.getWidth(), 96);
@@ -1193,18 +1332,12 @@ void MainComponent::resized() {
             c->setBounds(r.getX(), r.getY(), r.getWidth(), h);
             r.removeFromTop(h);
         };
-        // Each visible context row reserves its divider boundary
-        // (16) + its effective height + the 6 px trailing gap from
-        // the coin solver's share of the stack.
-        const int fngH = tickerbar::contextCellExtent(state.fngCellWidth, true);
-        const int domH = tickerbar::contextCellExtent(state.domCellWidth, true);
-        const int ctxReserve = (showF ? 16 + fngH + 6 : 0) + (showD ? 16 + domH + 6 : 0);
-        // v0.3.2: both context rows hidden — the trailing divider
-        // takes divider A's place under the last coin row; reserve
-        // its 16 px boundary from the coin solver like a context
-        // row's divider, and it lands in the strip the loop leaves
-        // after the last row.
-        const bool showTrail = n > 0 && !showF && !showD;
+        // v0.6.11: the trailing divider is the standing end of
+        // the coin stack (the context rows it used to alternate
+        // with live in the title bar); reserve its 16 px boundary
+        // from the coin solver, and it lands in the strip the
+        // loop leaves after the last row.
+        const bool showTrail = crypto && n > 0;
         const int trailReserve = showTrail ? 16 : 0;
         if (n > 0) {
             std::vector<int> expl((size_t)n, 0);
@@ -1212,7 +1345,7 @@ void MainComponent::resized() {
                 auto it = state.cellWidths.find(cells_[(size_t)i]->symbol);
                 if (it != state.cellWidths.end()) expl[(size_t)i] = it->second;
             }
-            auto heights = tickerbar::solveCellWidths(r.getHeight() - ctxReserve - trailReserve, boundary, expl, 56);
+            auto heights = tickerbar::solveCellWidths(r.getHeight() - trailReserve, boundary, expl, 56);
             for (int i = 0; i < n; ++i) {
                 placeRow(cells_[(size_t)i].get(), heights[(size_t)i]);
                 if (i + 1 < n && i < (int)splitters_.size()) {
@@ -1226,18 +1359,19 @@ void MainComponent::resized() {
                 r.removeFromTop(boundary);
             }
         }
-        // Context rows under the coins, each visible one preceded
-        // by its divider (dragging it adjusts row heights — the
-        // stored width doubles as height, like the coin cells).
-        auto placeCtxRow = [&](ContextCell* cell, int h, CellSplitter* sp) {
-            sp->verticalBar = true;
-            sp->setBounds(r.getX(), r.getY() + 3, r.getWidth(), 10);
-            r.removeFromTop(16);
-            placeRow(cell, h);
-            r.removeFromTop(6);
-        };
-        if (showF) placeCtxRow(fngCell_.get(), fngH, ctxSplitA_.get());
-        if (showD) placeCtxRow(domCell_.get(), domH, showF ? ctxSplitB_.get() : ctxSplitA_.get());
+        // v0.6.11: a rotation section's fitted stack — full-width
+        // quote rows sharing the height (the core solver), each
+        // capped at 76 px so a short section does not sprawl.
+        if (!crypto && !quoteCells_.empty()) {
+            const int m = (int)quoteCells_.size();
+            std::vector<int> zeros((size_t)m, 0);
+            auto heights = tickerbar::solveCellWidths(r.getHeight(), boundary, zeros, 48);
+            for (int i = 0; i < m; ++i) {
+                const int h = std::min(heights[(size_t)i], 76);
+                quoteCells_[(size_t)i]->setBounds(r.getX(), r.getY(), r.getWidth(), h);
+                r.removeFromTop(h + boundary);
+            }
+        }
         if (anime && mascot_) mascot_->setBounds(r.removeFromTop(96));
         } // !marqueeActive_
         if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
@@ -1247,13 +1381,20 @@ void MainComponent::resized() {
     syncFxPump();      // v0.4.0: a resize can start/stop the marquee, which rides the fx pump
 }
 
-// --- overflow marquee (v0.4.0). The strip's flow order — coins in
-// watchlist order, then the visible context cells (Fear & Greed,
-// BTC dominance), matching the order both fitted layouts present.
-// A coin's natural extent is its dragged width when one is stored,
-// else a comfortable default; context cells use their core extent.
+// --- overflow marquee (v0.4.0). The strip's flow order — in the
+// Crypto section, coins in watchlist order; in a v0.6.11 rotation
+// section, the section's quote cells in table order. A coin's
+// natural extent is its dragged width when one is stored, else a
+// comfortable default; quote cells use their core natural extent.
+// (The context readings no longer ride the strip — v0.6.11 moved
+// them into the title bar.)
 std::vector<MainComponent::StripItem> MainComponent::stripItems() const {
     std::vector<StripItem> out;
+    if (rotationSection() != (int)tickerbar::RotationSection::Crypto) {
+        for (auto& c : quoteCells_)
+            out.push_back({ c.get(), vertical_ ? tickerbar::kQuoteCellExtentV : tickerbar::kQuoteCellExtentH });
+        return out;
+    }
     const int defCoin = vertical_ ? 96 : 160;
     const int minCoin = vertical_ ? 56 : 90; // the solver floors, mirrored
     for (auto& c : cells_) {
@@ -1262,8 +1403,6 @@ std::vector<MainComponent::StripItem> MainComponent::stripItems() const {
         if (it != state.cellWidths.end() && it->second > 0) e = std::max(it->second, minCoin);
         out.push_back({ c.get(), e });
     }
-    if (state.showFearGreed && fngCell_) out.push_back({ fngCell_.get(), tickerbar::contextCellExtent(state.fngCellWidth, vertical_) });
-    if (state.showBtcDominance && domCell_) out.push_back({ domCell_.get(), tickerbar::contextCellExtent(state.domCellWidth, vertical_) });
     return out;
 }
 
@@ -1281,9 +1420,7 @@ void MainComponent::positionStrip() {
     if (!marqueeActive_ || marqueeCycle_ <= 0) return;
     auto items = stripItems();
     const int gap = 16, off = (int)std::floor(marqueeOffset_);
-    const int nCoins = (int)cells_.size();
-    const bool showF = state.showFearGreed && fngCell_ != nullptr;
-    const bool showD = state.showBtcDominance && domCell_ != nullptr;
+    const int nCoins = rotationSection() == (int)tickerbar::RotationSection::Crypto ? (int)cells_.size() : 0;
     int base = 0, idx = 0;
     for (auto& it : items) {
         const int rel = tickerbar::marqueePosition(base, it.extent, off, marqueeCycle_);
@@ -1297,27 +1434,6 @@ void MainComponent::positionStrip() {
             else sp->setBounds(stripRect_.getX() + srel, stripRect_.getY(), 10, stripRect_.getHeight());
             sp->setVisible(true);
         }
-        // v0.6.1: the CONTEXT dividers ride the scroll too — the
-        // v0.5.4 fix above restored only the coin pairs, and
-        // resized() hides both context splitters for the marquee,
-        // so in an overflowing strip the F&G / BTC-dominance cells
-        // could not be dragged at all (Jackson's field report).
-        // Same core math, placed in the gap after their left item:
-        // A on the boundary after the LAST coin (its pair partner
-        // is the nearest context cell), B after the F&G item.
-        // Their drag path (onContextSplitterDrag) reads the strip
-        // extents straight off the components and holds the scroll
-        // via splitterDragBegin, exactly like the coin pairs.
-        auto placeCtx = [&](CellSplitter* sp) {
-            if (sp == nullptr) return;
-            const int srel = tickerbar::marqueeSplitterRel(rel, it.extent, gap, 10);
-            sp->verticalBar = vertical_;
-            if (vertical_) sp->setBounds(stripRect_.getX(), stripRect_.getY() + srel, stripRect_.getWidth(), 10);
-            else sp->setBounds(stripRect_.getX() + srel, stripRect_.getY(), 10, stripRect_.getHeight());
-            sp->setVisible(true);
-        };
-        if (idx == nCoins - 1 && nCoins > 0 && (showF || showD)) placeCtx(ctxSplitA_.get());
-        if (idx == nCoins && showF && showD) placeCtx(ctxSplitB_.get());
         base += it.extent + gap;
         ++idx;
     }
@@ -1366,43 +1482,6 @@ void MainComponent::rebuildSplitters() {
         addAndMakeVisible(sp.get());
         splitters_.push_back(std::move(sp));
     }
-}
-
-// --- context-cell dividers (post-v0.3.0, Vishona's request). A
-// pairs the LAST coin cell with the nearest visible context cell
-// (Fear & Greed, or BTC dominance when Fear & Greed is hidden); B
-// pairs Fear & Greed with BTC dominance. Same pair math as the
-// coin dividers: the coin side persists into cellWidths, the
-// context side into the cell's own width field; both reflow via
-// resized(). The axis extent doubles as height in vertical mode,
-// exactly like the coin widths. ---
-void MainComponent::onContextSplitterDrag(bool coinsPair, int delta) {
-    if (coinsPair) {
-        const bool useFng = state.showFearGreed;
-        if (cells_.empty() || (!useFng && !state.showBtcDominance)) return;
-        auto* coin = cells_.back().get();
-        auto* ctx = useFng ? (juce::Component*)fngCell_.get() : (juce::Component*)domCell_.get();
-        const int w1 = vertical_ ? coin->getHeight() : coin->getWidth();
-        const int w2 = vertical_ ? ctx->getHeight() : ctx->getWidth();
-        auto pr = tickerbar::adjustPairWidths(w1, w2, delta, tickerbar::kContextCellMin);
-        const int coinMin = vertical_ ? 56 : 90; // the coin solver's floors, mirrored
-        if (pr.first < coinMin) { // the coin keeps its floor; the context cell absorbs the difference
-            pr.second -= coinMin - pr.first;
-            pr.first = coinMin;
-            if (pr.second < tickerbar::kContextCellMin) pr.second = tickerbar::kContextCellMin;
-        }
-        state.cellWidths[coin->symbol] = pr.first;
-        (useFng ? state.fngCellWidth : state.domCellWidth) = pr.second;
-    } else {
-        if (!state.showFearGreed || !state.showBtcDominance) return;
-        const int w1 = vertical_ ? fngCell_->getHeight() : fngCell_->getWidth();
-        const int w2 = vertical_ ? domCell_->getHeight() : domCell_->getWidth();
-        auto pr = tickerbar::adjustPairWidths(w1, w2, delta, tickerbar::kContextCellMin);
-        state.fngCellWidth = pr.first;
-        state.domCellWidth = pr.second;
-    }
-    saveSettings();
-    resized();
 }
 
 // --- trailing divider (v0.3.2). Shown only when no context cell
@@ -1542,23 +1621,140 @@ void MainComponent::refreshData() {
 }
 
 void MainComponent::refreshContext() {
-    if (!fngCell_ || !domCell_) return;
+    if (!titleCtx_) return;
+    titleCtx_->setIncluded(state.showFearGreed, state.showBtcDominance);
     const auto fg = contextClient_.fng();
     if (fg.value) {
         const int band = tickerbar::fngBandIndex(fg.value->value);
         juce::Colour col = band == 0 ? theme_.bad : band == 1 ? theme_.warn
                          : band == 2 ? theme_.text : theme_.good;
-        fngCell_->setData(juce::String(fg.value->value), juce::String(fg.value->classification), col,
-                          tickerbar::contextStale(true, fg.ageSec));
+        titleCtx_->setReading(true, juce::String(fg.value->value), juce::String(fg.value->classification), col,
+                              true, tickerbar::contextStale(true, fg.ageSec));
     } else {
-        fngCell_->setData("--", "loading...", theme_.dim, false);
+        titleCtx_->setReading(true, "--", "loading...", theme_.dim, false, false);
     }
     const auto dom = contextClient_.dominance();
     if (dom.value) {
-        domCell_->setData(juce::String(tickerbar::formatDominance(*dom.value)), "BTC share of market",
-                          theme_.accent2, tickerbar::contextStale(true, dom.ageSec));
+        titleCtx_->setReading(false, juce::String(tickerbar::formatDominance(*dom.value)), "BTC share of market",
+                              theme_.accent2, true, tickerbar::contextStale(true, dom.ageSec));
     } else {
-        domCell_->setData("--", "loading...", theme_.dim, false);
+        titleCtx_->setReading(false, "--", "loading...", theme_.dim, false, false);
+    }
+}
+
+// --- v0.6.11 rotation sections --------------------------------------
+// The switcher's single entry (Settings combo + Menu > Rotation):
+// persist, rebuild the section's cells when the section changed,
+// reflow. A preset load lands here too, via settingsChanged's
+// section guard below.
+void MainComponent::setRotationSection(int idx) {
+    state.rotationSection = juce::jlimit(0, tickerbar::kRotationSectionCount - 1, idx);
+    if (state.rotationSection != builtSection_) {
+        rebuildSectionCells();
+        refreshSections();
+    }
+    saveSettings();
+    resized();
+    repaint();
+}
+
+void MainComponent::rebuildSectionCells() {
+    quoteCells_.clear();
+    sectionDefs_ = tickerbar::sectionCells(rotationSection());
+    builtSection_ = rotationSection();
+    for (auto& def : sectionDefs_) {
+        auto cell = std::make_unique<QuoteCell>(this);
+        cell->title = juce::String(def.display);
+        juce::String tip = juce::String(def.label);
+        switch (def.kind) {
+            case tickerbar::SectionCellKind::Quote:
+                tip += (!def.cnbc.empty() && def.cnbc[0] == '.')
+                           ? " - index reading, CNBC public quotes. Day change vs the previous close."
+                           : " - CNBC public quotes. Day change vs the previous close.";
+                break;
+            case tickerbar::SectionCellKind::Yield:
+                tip += " - FRED daily series; the cell prints the observation date (publication lags about a business day). Change is vs the previous observation, in basis points.";
+                break;
+            default:
+                tip += " - computed from the Top 100 quote batch: a proxy, not an official exchange figure.";
+                break;
+        }
+        cell->setTooltip(tip);
+        addAndMakeVisible(cell.get());
+        quoteCells_.push_back(std::move(cell));
+    }
+    resized();
+}
+
+// SectionClient -> quote cells. Every reading keeps the family's
+// honesty shapes: a value greys + STALE on its own source's clock
+// (3x its poll), a source that has never landed shows "--", and
+// after repeated failures the cell says "unavailable" outright.
+void MainComponent::refreshSections() {
+    if (builtSection_ != rotationSection()) rebuildSectionCells();
+    using namespace tickerbar;
+    for (size_t i = 0; i < quoteCells_.size() && i < sectionDefs_.size(); ++i) {
+        auto& cell = *quoteCells_[i];
+        const auto& def = sectionDefs_[i];
+        switch (def.kind) {
+            case SectionCellKind::Quote: {
+                auto st = sectionClient_.quote(def.display);
+                if (!st.value) { cell.setWaiting(st.attempted && st.failures >= 2 ? "unavailable" : "loading..."); break; }
+                const auto& q = *st.value;
+                const bool isIndex = !def.cnbc.empty() && def.cnbc[0] == '.';
+                const juce::String val = isIndex ? juce::String(formatIndexValue(q.last))
+                                                 : juce::String(formatPrice(q.last));
+                auto pct = changePct(q.last, q.prevClose);
+                const juce::String pctText = pct ? juce::String(formatPct(*pct)) : juce::String();
+                const juce::Colour pctCol = pct ? gainColour(*pct >= 0) : theme_.dim;
+                juce::String sub;
+                if (q.high > 0 && q.low > 0)
+                    sub = "H " + juce::String(isIndex ? formatIndexValue(q.high) : formatPrice(q.high)) +
+                          "  L " + juce::String(isIndex ? formatIndexValue(q.low) : formatPrice(q.low));
+                else sub = juce::String(q.name);
+                const bool stale = feedStatus(true, st.ageSec,
+                                              builtSection_ == (int)RotationSection::Top100 ? kTop100StaleSec
+                                                                                             : kSectionStaleSec) != FeedStatus::Live;
+                cell.setData(val, pctText, pctCol, sub, q.dailyCloses,
+                             pct ? gainColour(*pct >= 0) : theme_.accent2, stale);
+                break;
+            }
+            case SectionCellKind::Yield: {
+                auto st = sectionClient_.yieldFor(def.fredId);
+                if (!st.value) { cell.setWaiting(st.attempted && st.failures >= 2 ? "unavailable" : "loading..."); break; }
+                const auto& y = *st.value;
+                juce::String pctText;
+                juce::Colour pctCol = theme_.dim;
+                if (y.prevPct > 0) {
+                    const long bp = std::llround((y.valuePct - y.prevPct) * 100.0);
+                    pctText = (bp > 0 ? "+" : "") + juce::String(bp) + " bp";
+                    pctCol = gainColour(bp >= 0);
+                }
+                const bool stale = feedStatus(true, st.ageSec, kFredStaleSec) != FeedStatus::Live;
+                cell.setData(juce::String(y.valuePct, 2) + "%", pctText, pctCol,
+                             juce::String(y.date), y.history, theme_.accent2, stale);
+                break;
+            }
+            case SectionCellKind::InternalsAdv:
+            case SectionCellKind::InternalsMedian:
+            case SectionCellKind::InternalsEqWt: {
+                auto st = sectionClient_.internals();
+                if (!st.value) { cell.setWaiting(st.attempted && st.failures >= 2 ? "unavailable" : "loading..."); break; }
+                const auto& p = *st.value;
+                const bool stale = feedStatus(true, st.ageSec, kTop100StaleSec) != FeedStatus::Live;
+                if (def.kind == SectionCellKind::InternalsAdv) {
+                    cell.setData(juce::String(p.advancersPct, 1) + "%", "", theme_.dim,
+                                 "computed proxy - " + juce::String(p.advancers) + " of " + juce::String(p.valid) + " up",
+                                 {}, theme_.accent2, stale);
+                } else {
+                    const double v = def.kind == SectionCellKind::InternalsMedian ? p.medianChangePct
+                                                                                   : p.equalWeightChangePct;
+                    cell.setData(juce::String(formatPct(v)), "", theme_.dim,
+                                 "computed proxy - Top 100 quotes", {}, gainColour(v >= 0), stale);
+                }
+                break;
+            }
+        }
     }
 }
 
@@ -1593,6 +1789,18 @@ void MainComponent::timerCallback() {
     pollUpdater();
     refreshStatus();
     refreshContext(); // age-based stale transitions need no new data to show
+    refreshSections(); // v0.6.11: same for the section cells
+    // v0.6.11: the title rotator's dwell — flip faces on the core
+    // rotation pace while both readings are enabled and the cell
+    // is actually on screen; the accumulator resets whenever the
+    // rotator hides, so a reappearing cell starts a full dwell.
+    if (titleCtx_ && titleCtx_->isVisible() && state.showFearGreed && state.showBtcDominance) {
+        titleFlipClock_ += 0.25;
+        if (titleFlipClock_ >= tickerbar::kTitleContextRotateSec) {
+            titleFlipClock_ = 0.0;
+            titleCtx_->flip();
+        }
+    } else titleFlipClock_ = 0.0;
     // v0.2.0: NO screen-space work here. The v0.1 sync ran from this
     // 4 Hz timer and re-asserted the AppBar several times a second —
     // half of the flicker Jackson field-reported (MeterBar v0.18's
@@ -1622,6 +1830,13 @@ void MainComponent::settingsChanged(bool watchlistToo) {
         client_.setWatchlist(state.watchlist);
         rebuildCells();
         rebuildSettingsDeferred();
+    }
+    // v0.6.11: a section change that arrived by any path other
+    // than setRotationSection (a preset load, the factory reset)
+    // still rebuilds the section's cells.
+    if (state.rotationSection != builtSection_) {
+        rebuildSectionCells();
+        refreshSections();
     }
     if (linkBtn_.getToggleState() != state.linkEnabled)
         linkBtn_.setToggleState(state.linkEnabled, juce::dontSendNotification);
@@ -1658,23 +1873,6 @@ void MainComponent::resetSymbolCellWidths() {
     resized();
     rebuildSettingsDeferred(); // the sheet's sliders/readouts re-read the cleared store
 }
-// v0.5.9: the Settings > Sizes panel's read/write path into the
-// context cells' stored extents — the same fngCellWidth /
-// domCellWidth fields the divider beside each context cell writes
-// (splitter drag path above). The write tail mirrors the coin
-// setter: persist, then reflow. Stored values live in the same
-// band contextCellExtent clamps to at layout time.
-int MainComponent::contextCellWidth(bool fng) const {
-    return fng ? state.fngCellWidth : state.domCellWidth;
-}
-void MainComponent::setContextCellWidth(bool fng, int px) {
-    const int clamped = px < tickerbar::kContextCellMin ? tickerbar::kContextCellMin
-                      : (px > tickerbar::kContextCellMax ? tickerbar::kContextCellMax : px);
-    (fng ? state.fngCellWidth : state.domCellWidth) = clamped;
-    saveSettings();
-    resized();
-}
-
 // v0.5.6: "Link background" flipped in Settings. Turning it ON
 // re-stamps the current background so linked peers adopt it now;
 // turning it OFF needs nothing (the client's publish/adopt paths
@@ -1797,16 +1995,12 @@ int MainComponent::minimumBarWidth() const {
         cellsW += tickerbar::minCoinCellWidth(symW, pctWorst);
     }
     if (!state.watchlist.empty()) cellsW += 16 * ((int)state.watchlist.size() - 1); // splitter boundaries
-    // Context cells (post-v0.3.0): each VISIBLE one contributes
-    // its effective width plus its 16 px divider boundary; a
-    // hidden cell contributes nothing — the floor shrinks with it.
-    // v0.3.2: with BOTH hidden, the trailing divider's boundary
-    // takes their place at the floor (the coins solve into 16 px
-    // less, so the floor must still cover their minimums).
-    int ctxW = 0;
-    if (state.showFearGreed) ctxW += tickerbar::contextCellExtent(state.fngCellWidth, false) + 16;
-    if (state.showBtcDominance) ctxW += tickerbar::contextCellExtent(state.domCellWidth, false) + 16;
-    if (!state.showFearGreed && !state.showBtcDominance) ctxW += 16;
+    // v0.6.11: the context readings contribute nothing here any
+    // more — they live in the title bar, whose own room rule
+    // (core titleContextExtent) hides the rotator rather than
+    // letting it crush the strip. The trailing divider's 16 px
+    // boundary is the row's only fixed extra.
+    const int ctxW = 16;
     const int chrome = 16 /*outer pad*/ + 24 /*status dot*/ + 92 + 44 + 70 /*wordmark + version + status*/
                      + 76 + 52 + 76 + 76 + 64 + 56 + 62 + 72 + 68 + 26 + 46 + 44 /*the v0.3.0 cluster + its gaps*/
                      + ctxW;
@@ -1917,8 +2111,8 @@ void MainComponent::applyTheme() {
     applyChrome();
     if (mascot_) mascot_->setVisible(state.themeName == "Anime");
     for (auto& c : cells_) c->repaint();
-    if (fngCell_) fngCell_->repaint();
-    if (domCell_) domCell_->repaint();
+    if (titleCtx_) titleCtx_->repaint();
+    for (auto& c : quoteCells_) c->repaint();
     resized(); // the mascot cell (Anime) and cell softening depend on the theme
     repaint();
 }
@@ -1996,7 +2190,8 @@ void MainComponent::doStackAll() {
 // below are unified (the old standalone menus each started at 1).
 enum { mnArrange = 1, mnRestore, mnStack, mnMinimize, mnQuit, mnCheckUpdates,
        mnPresetNew = 10, mnPresetSave, mnPresetSaveAs, mnPresetFolder, mnPresetLoadBase = 1000,
-       mnEdgeTop = 20, mnEdgeBottom, mnEdgeLeft, mnEdgeRight, mnPin, mnReserve, mnDisplayBase = 2000 };
+       mnEdgeTop = 20, mnEdgeBottom, mnEdgeLeft, mnEdgeRight, mnPin, mnReserve, mnDisplayBase = 2000,
+       mnSectionBase = 3000 }; // v0.6.11: + RotationSection ordinal
 juce::PopupMenu MainComponent::buildRepositionSubMenu() {
     juce::PopupMenu m;
     const int edge = (int)state.dockEdge;
@@ -2043,6 +2238,14 @@ void MainComponent::showMainMenu() {
     m.addItem(mnRestore, "Restore Windows");
     m.addItem(mnStack, "Stack Linked Bars");
     m.addSubMenu("Reposition", buildRepositionSubMenu());
+    // v0.6.11: the rotation-section switcher (the Settings >
+    // Rotation combo is the same choice over the same field).
+    {
+        juce::PopupMenu rot;
+        for (int i = 0; i < tickerbar::kRotationSectionCount; ++i)
+            rot.addItem(mnSectionBase + i, tickerbar::rotationSectionName(i), true, i == rotationSection());
+        m.addSubMenu("Rotation", rot);
+    }
     m.addSeparator();
     m.addItem(mnCheckUpdates, "Check for updates");
     m.addItem(mnMinimize, "Minimize");
@@ -2061,6 +2264,7 @@ void MainComponent::showMainMenu() {
         else if (r == mnPresetSaveAs) savePresetInteractive(true);
         else if (r == mnPresetFolder) presetio::presetFolder().revealToUser();
         else if (r >= mnPresetLoadBase && r < mnPresetLoadBase + presetFiles.size()) loadPresetFile(presetFiles[r - mnPresetLoadBase]);
+        else if (r >= mnSectionBase && r < mnSectionBase + tickerbar::kRotationSectionCount) setRotationSection(r - mnSectionBase);
         else if (r == mnArrange) doArrange();
         else if (r == mnRestore) doRestore();
         else if (r == mnCheckUpdates) checkForUpdates();

@@ -180,6 +180,29 @@ inline int contextCellExtent(int stored, bool vertical) {
 }
 
 // ------------------------------------------------------------------
+// ROTATION SECTIONS + TITLE-BAR CONTEXT ROTATOR (v0.6.11).
+// Natural extent of one section quote/yield cell in the strip.
+inline constexpr int kQuoteCellExtentH = 148;  // along a horizontal strip
+inline constexpr int kQuoteCellExtentV = 64;   // along a vertical stack
+
+// The title-bar context rotator (Fear & Greed + BTC dominance merged
+// into ONE small cell between the left cluster — wordmark, version,
+// LIVE status — and the three top-right icons) gets room only when
+// what remains of the title bar can hold it WITHOUT crushing either
+// cluster: below kTitleContextMinPx it hides entirely (the readings
+// are a garnish; the wordmark/status and the icons are furniture).
+// When it shows, it is capped at kTitleContextMaxPx so a wide bar
+// does not grow it into a second status line. Dwell is 6 s per face —
+// the family's rotation pace is a few seconds per reading.
+inline constexpr int kTitleContextMinPx = 148;
+inline constexpr int kTitleContextMaxPx = 216;
+inline constexpr double kTitleContextRotateSec = 6.0;
+inline int titleContextExtent(int remainingPx) {
+    return remainingPx < kTitleContextMinPx ? 0
+                                            : std::min(remainingPx, kTitleContextMaxPx);
+}
+
+// ------------------------------------------------------------------
 // OVERFLOW MARQUEE (v0.4.0, Jackson's ask): when the strip's natural
 // content is wider than the bar itself, the strip scrolls left in a
 // seamless loop — news-ticker style — so every cell gets its turn on

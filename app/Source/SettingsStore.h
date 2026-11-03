@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <tickerbar/Sections.hpp>
 #include <tickerbar/State.hpp>
 // Settings persistence: ONE JSON file in the per-user app data folder
 // (<AppData>/TickerBar/settings.json on Windows), via JUCE's built-in
@@ -55,6 +56,7 @@ inline juce::var toVar(const tickerbar::TickerState& s) {
     set("showBtcDominance", s.showBtcDominance);
     set("fngWidth", s.fngCellWidth);
     set("domWidth", s.domCellWidth);
+    set("rotationSection", s.rotationSection); // v0.6.11 (absent in older files -> Crypto)
     return juce::var(o);
 }
 inline tickerbar::TickerState fromVar(const juce::var& v) {
@@ -120,6 +122,8 @@ inline tickerbar::TickerState fromVar(const juce::var& v) {
         const int w = (int)x; return (w == 0 || (w >= 40 && w <= 600)) ? w : d; };
     s.fngCellWidth = gw("fngWidth", s.fngCellWidth);
     s.domCellWidth = gw("domWidth", s.domCellWidth);
+    s.rotationSection = juce::jlimit(0, tickerbar::kRotationSectionCount - 1,
+                                     gi("rotationSection", s.rotationSection));
     return s;
 }
 inline tickerbar::TickerState load() {

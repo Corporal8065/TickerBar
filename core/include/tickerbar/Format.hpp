@@ -36,6 +36,19 @@ inline std::string formatPrice(double px) {
     return std::string(px < 0 ? "-$" : "$") + grouped;
 }
 
+// v0.6.11: an index level (S&P 500, VIX, ...) — grouped thousands,
+// 2dp, NO currency sign: an index is a level, not a price, and the
+// section cells must not dress it as one.
+inline std::string formatIndexValue(double v) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.2f", std::fabs(v));
+    std::string s = buf;
+    auto dot = s.find('.');
+    std::string grouped = groupThousands(dot == std::string::npos ? s : s.substr(0, dot));
+    if (dot != std::string::npos) grouped += s.substr(dot);
+    return std::string(v < 0 ? "-" : "") + grouped;
+}
+
 inline std::string formatPct(double pct) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "%+.2f%%", pct);

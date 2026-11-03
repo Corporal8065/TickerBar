@@ -29,6 +29,8 @@
 #include <tickerbar/Glow.hpp>
 #include <tickerbar/Mascot.hpp>
 #include <tickerbar/Glyphs.hpp>
+#include <tickerbar/Sections.hpp>
+#include <tickerbar/SectionParse.hpp>
 #include "TickerBarVersion.h" // v0.5.3: generated from the root project() VERSION
 #ifndef FIXTURES_DIR
 #define FIXTURES_DIR "tests/fixtures"
@@ -1420,6 +1422,161 @@ int main() {
         CHECK(std::string(tickerbar::glyphSettingsUtf8()) == std::string("\xE2\x9A\x99", 3));
         CHECK(std::string(tickerbar::glyphMenuUtf8()) == encodeUtf8(0x2630));
         CHECK(std::string(tickerbar::glyphMenuUtf8()) == std::string("\xE2\x98\xB0", 3));
+    }
+
+    // ---------- v0.6.11: rotation sections ----------
+    // Fixtures cnbc_quotes_batch.json / cnbc_quotes_unknown.json /
+    // fred_dgs10.csv / yahoo_chart_spy.json are REAL payloads captured
+    // live 2026-11-03 from the keyless sources (CNBC restQuote batch,
+    // FRED fredgraph, Yahoo v8 chart); broken variants are inline.
+    {
+        // CNBC number shapes: comma-grouped strings, signed percents,
+        // plain JSON numbers; garbage fails.
+        auto jNum = [](const char* s) { auto v = parseJson(std::string("{\"x\":") + s + "}"); return cnbcNumber(*v->find("x")); };
+        CHECK(jNum("\"7,568.65\"") && near(*jNum("\"7,568.65\""), 7568.65));
+        CHECK(jNum("\"+0.36%\"") && near(*jNum("\"+0.36%\""), 0.36));
+        CHECK(jNum("\"-1,234.5\"") && near(*jNum("\"-1,234.5\""), -1234.5));
+        CHECK(jNum("42.5") && near(*jNum("42.5"), 42.5));
+        CHECK(!jNum("\"N/A\""));
+        CHECK(!jNum("\"\""));
+        CHECK(!jNum("null"));
+        CHECK(!jNum("\"12.3.4\""));
+
+        // The real batch: 4 rows, indexes and BRK.B included.
+        auto batch = parseCnbcQuotes(readFile("cnbc_quotes_batch.json"));
+        CHECK(batch.has_value());
+        CHECK(batch && batch->size() == 4);
+        CHECK(batch && (*batch)[0].symbol == "SPY" && near((*batch)[0].last, 754.19) && near((*batch)[0].prevClose, 752.10));
+        CHECK(batch && (*batch)[1].symbol == ".SPX" && near((*batch)[1].last, 7565.73));  // commas stripped
+        CHECK(batch && (*batch)[2].symbol == "BRK.B" && near((*batch)[2].last, 557.18));
+        CHECK(batch && (*batch)[3].symbol == "NVDA" && (*batch)[3].name == "NVIDIA Corporation");
+
+        // The source's unknown-symbol answer: the row is SKIPPED (its
+        // own signal), the parse still succeeds with zero quotes.
+        auto unk = parseCnbcQuotes(readFile("cnbc_quotes_unknown.json"));
+        CHECK(unk.has_value());
+        CHECK(unk && unk->empty());
+
+        // Broken shapes poison the batch — never a partial reading.
+        CHECK(!parseCnbcQuotes("").has_value());
+        CHECK(!parseCnbcQuotes("[]").has_value());
+        CHECK(!parseCnbcQuotes("{\"FormattedQuoteResult\":{}}").has_value());
+        CHECK(!parseCnbcQuotes(R"({"FormattedQuoteResult":{"FormattedQuote":[{"symbol":"SPY","code":0,"last":"N/A"}]}})").has_value());
+        CHECK(!parseCnbcQuotes(R"({"FormattedQuoteResult":{"FormattedQuote":[{"symbol":"SPY","code":0,"last":"-5"}]}})").has_value());
+        // "code" read through the house numeric view (Json::asNumber
+        // blesses numeric strings): "0" accepts, "1" skips.
+        auto codeStr = parseCnbcQuotes(R"({"FormattedQuoteResult":{"FormattedQuote":[{"symbol":"SPY","code":"0","last":"10"}]}})");
+        CHECK(codeStr && codeStr->size() == 1);
+        auto codeStrSkip = parseCnbcQuotes(R"({"FormattedQuoteResult":{"FormattedQuote":[{"symbol":"SPY","code":"1","last":"10"}]}})");
+        CHECK(codeStrSkip && codeStrSkip->empty());
+        CHECK(!parseCnbcQuotes(R"({"FormattedQuoteResult":{"FormattedQuote":["SPY"]}})").has_value());
+        // A code-nonzero row among good ones: only that row is skipped.
+        auto mixed = parseCnbcQuotes(R"({"FormattedQuoteResult":{"FormattedQuote":[{"symbol":"ZZZ","code":1},{"symbol":"SPY","code":0,"last":"10.5","previous_day_closing":"10"}]}})");
+        CHECK(mixed && mixed->size() == 1 && (*mixed)[0].symbol == "SPY");
+
+        // FRED CSV: the real DGS10 window (header + 45 observations).
+        auto fred = parseFredGraphCsv(readFile("fred_dgs10.csv"));
+        CHECK(fred.has_value());
+                CHECK(fred && fred->size() == 43);  // 45 rows minus 2 holiday gaps (empty value)
+        CHECK(fred && fred->back().date == "2026-10-30" && near(fred->back().value, 4.94));
+        auto yr = yieldReadingFrom(*fred);
+        CHECK(near(yr.valuePct, 4.94) && near(yr.prevPct, 4.98) && yr.date == "2026-10-30");
+        CHECK(yr.history.size() == 43);
+        // "." gap rows are the source's own mark: skipped, not fatal.
+        auto gaps = parseFredGraphCsv("observation_date,DGS10\n2026-10-28,4.90\n2026-10-29,.\n2026-10-30,4.94\n");
+        CHECK(gaps && gaps->size() == 2);
+        CHECK(!parseFredGraphCsv("").has_value());
+        CHECK(!parseFredGraphCsv("2026-10-30,4.94\n").has_value());          // no header
+        CHECK(!parseFredGraphCsv("observation_date,DGS10\n2026-10-30,abc\n").has_value());
+        CHECK(!parseFredGraphCsv("observation_date,DGS10\n30-10-2026,4.94\n").has_value());
+        CHECK(fredDateShape("2026-10-30"));
+        CHECK(!fredDateShape("2026-1-3"));
+        CHECK(!fredDateShape("abcd-ef-gh"));
+
+        // Yahoo daily closes: the real SPY month (22 sessions).
+        auto closes = parseYahooDailyCloses(readFile("yahoo_chart_spy.json"));
+        CHECK(closes.has_value());
+        CHECK(closes && closes->size() == 22);
+        CHECK(closes && near(closes->front(), 774.8300170898438, 1e-6));
+        CHECK(closes && near(closes->back(), 754.1699829101562, 1e-6));
+        CHECK(!parseYahooDailyCloses(R"({"chart":{"result":null,"error":{"code":"Not Found"}}})").has_value());
+        // A close that reads as a number through the house numeric
+        // view is accepted; a non-numeric string poisons the series.
+        auto strClose = parseYahooDailyCloses(R"({"chart":{"result":[{"indicators":{"quote":[{"close":["774.83",775.0]}]}}],"error":null}})");
+        CHECK(strClose && strClose->size() == 2);
+        CHECK(!parseYahooDailyCloses(R"({"chart":{"result":[{"indicators":{"quote":[{"close":["soon",775.0]}]}}],"error":null}})").has_value());
+        auto withNull = parseYahooDailyCloses(R"({"chart":{"result":[{"indicators":{"quote":[{"close":[100.0,null,101.5]}]}}],"error":null}})");
+        CHECK(withNull && withNull->size() == 2);  // null = halt mark, skipped
+        CHECK(!parseYahooDailyCloses(R"({"chart":{"result":[{"indicators":{"quote":[{"close":[100.0]}]}}],"error":null}})").has_value());
+
+        // Internals computed proxy: +10 / -10 / flat / unusable-ref.
+        std::vector<CnbcQuote> qs = {
+            { "A", "", 110.0, 100.0, 0, 0, 0 },
+            { "B", "", 90.0, 100.0, 0, 0, 0 },
+            { "C", "", 100.0, 100.0, 0, 0, 0 },
+            { "D", "", 50.0, 0.0, 0, 0, 0 },   // no reference: excluded
+        };
+        auto in = computeInternalsProxy(qs);
+        CHECK(in.has_value());
+        CHECK(in && in->valid == 3 && in->advancers == 1 && in->decliners == 1 && in->unchanged == 1);
+        CHECK(in && near(in->advancersPct, 100.0 / 3.0));
+        CHECK(in && near(in->medianChangePct, 0.0) && near(in->equalWeightChangePct, 0.0));
+        std::vector<CnbcQuote> qs2 = { { "A", "", 96.0, 100.0, 0, 0, 0 }, { "B", "", 102.0, 100.0, 0, 0, 0 } };
+        auto in2 = computeInternalsProxy(qs2);
+        CHECK(in2 && near(in2->medianChangePct, -1.0));  // even count: mean of the middle two
+        CHECK(!computeInternalsProxy({}).has_value());
+        CHECK(!computeInternalsProxy({ { "D", "", 50.0, 0.0, 0, 0, 0 } }).has_value());
+
+        // Section tables + URL builders.
+        CHECK(std::string(rotationSectionName(0)) == "Crypto");
+        CHECK(std::string(rotationSectionName(4)) == "Market Internals");
+        CHECK(std::string(rotationSectionName(5)).empty());
+        CHECK(sectionCells(0).empty());
+        CHECK(sectionCells(1).size() == 12);
+        CHECK(sectionCells(2).size() == 100);
+        CHECK(sectionCells(3).size() == 11);   // 5 yields + 6 bond ETFs
+        CHECK(sectionCells(4).size() == 4);    // VIX + 3 computed proxies
+        CHECK(top100Stocks().size() == 100);
+        CHECK(top100Stocks().front().symbol == std::string("NVDA"));
+        {
+            bool unique = true;
+            for (size_t i = 0; i < top100Stocks().size() && unique; ++i)
+                for (size_t j = i + 1; j < top100Stocks().size(); ++j)
+                    if (top100Stocks()[i].symbol == top100Stocks()[j].symbol) unique = false;
+            CHECK(unique);
+        }
+        CHECK(yahooSymbolFor("BRK.B") == "BRK-B");
+        CHECK(yahooSymbolFor("SPY") == "SPY");
+        CHECK(cnbcMainBatchIds().size() == 18);
+        CHECK(cnbcTop100BatchIds(0).size() == 50 && cnbcTop100BatchIds(1).size() == 50);
+        CHECK(cnbcBatchUrl({ "SPY", ".SPX" }).find("symbols=SPY%7C.SPX&") != std::string::npos);
+        CHECK(fredCsvUrl("DGS10", "2025-11-03") == "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10&cosd=2025-11-03");
+        CHECK(yahooChartUrl("^VIX").find("%5EVIX") != std::string::npos);
+        // Staleness budgets stay 3x the poll clocks.
+        CHECK(near(kSectionStaleSec, 3.0 * kCnbcMainPollSec));
+        CHECK(near(kTop100StaleSec, 3.0 * kCnbcTop100PollSec));
+        CHECK(near(kFredStaleSec, 3.0 * kFredPollSec));
+
+        // Title-bar rotator room rule: hides rather than crushing.
+        CHECK(titleContextExtent(0) == 0);
+        CHECK(titleContextExtent(kTitleContextMinPx - 1) == 0);
+        CHECK(titleContextExtent(kTitleContextMinPx) == kTitleContextMinPx);
+        CHECK(titleContextExtent(200) == 200);
+        CHECK(titleContextExtent(1000) == kTitleContextMaxPx);
+
+        // Index levels print grouped, 2dp, with no currency sign.
+        CHECK(formatIndexValue(7565.73) == "7,565.73");
+        CHECK(formatIndexValue(20.8) == "20.80");
+        CHECK(formatIndexValue(-1.5) == "-1.50");
+        CHECK(formatIndexValue(0.0) == "0.00");
+
+        // The persisted section choice defaults to Crypto.
+        CHECK(TickerState{}.rotationSection == 0);
+        {
+            TickerState s; s.rotationSection = 3;
+            resetAllSettingsToDefaults(s);
+            CHECK(s.rotationSection == 0);
+        }
     }
 
     std::printf("\n%d checks, %d failures\n", checks, failures);

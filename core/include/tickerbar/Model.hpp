@@ -109,4 +109,28 @@ inline std::vector<float> normalizeSeries(const std::vector<double>& xs) {
     for (double x : xs) out.push_back((float)((x - mn) / (mx - mn)));
     return out;
 }
+
+// v0.6.11: one rotation-section quote. last/prevClose are the price
+// of record (CNBC batch quotes); dailyCloses is sparkline garnish
+// (Yahoo daily closes, ascending) and may be empty — a cell with a
+// quote but no closes yet shows its day range instead.
+struct SectionQuote {
+    std::string name;
+    double last = 0.0;
+    double prevClose = 0.0;  // 0 = source did not say (no day change)
+    double open = 0.0, high = 0.0, low = 0.0;
+    std::vector<double> dailyCloses;
+};
+
+// v0.6.11: one FRED yield reading for the Bonds section. valuePct is
+// the latest observation in percent; prevPct the one before it (0 =
+// unknown); date is the OBSERVATION date (FRED publication lags about
+// a business day and the cell prints it, so the lag is never hidden);
+// history is the sparkline source, ascending.
+struct YieldReading {
+    double valuePct = 0.0;
+    double prevPct = 0.0;
+    std::string date;
+    std::vector<double> history;
+};
 } // namespace tickerbar
