@@ -15,8 +15,10 @@
 // away from their letters).
 //
 // Applied to the text TickerBar draws over its transparent /
-// visual background: the ticker cells, the context cells, the
-// toolbar labels and the (text) Update! button. Emoji / icon
+// visual background: the toolbar labels and the (text) Update!
+// button. (v0.6.10: the ticker cells and context cells no longer
+// use the pop — they draw single via drawSingle below, per
+// Jackson's 2026-11-03 cell-photo instruction.) Emoji / icon
 // GLYPH buttons (Link / Settings / Menu) are NOT routed through
 // here — Jackson: the emoji text was good as it was — and nothing
 // inside the opaque Settings sheet or the detail popup uses it.
@@ -63,6 +65,25 @@ inline void draw(juce::Graphics& g, const juce::String& text, juce::Rectangle<fl
 inline void draw(juce::Graphics& g, const juce::String& text, juce::Rectangle<int> r,
                  juce::Justification j, juce::Colour colour) {
     draw(g, text, r.toFloat(), j, colour);
+}
+
+// SINGLE DRAW (v0.6.10 — Jackson, 2026-11-03, with a photo of the
+// BTC cell): "remove the double text for each cell in the title %
+// return and every other element." Inside the ticker cells and the
+// context cells the pop's two copies overlap into illegibility at
+// cell text sizes, so cell text draws ONCE, in its own colour, with
+// no offset back copy. The caller sets the font first, exactly as
+// with draw above; the colour's own alpha still applies, so a
+// dimmed (stale) readout dims proportionally. The pop itself stays
+// for the toolbar labels / Update! button, which are not cells.
+inline void drawSingle(juce::Graphics& g, const juce::String& text, juce::Rectangle<float> r,
+                       juce::Justification j, juce::Colour colour) {
+    g.setColour(colour);
+    g.drawText(text, r, j);
+}
+inline void drawSingle(juce::Graphics& g, const juce::String& text, juce::Rectangle<int> r,
+                       juce::Justification j, juce::Colour colour) {
+    drawSingle(g, text, r.toFloat(), j, colour);
 }
 
 // drawFittedText with the pop (toolbar labels / the Update!

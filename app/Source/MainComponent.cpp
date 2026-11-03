@@ -182,14 +182,15 @@ public:
         auto lay = tickerbar::coinCellTopRow((int)top.getWidth(),
                                              (int)std::ceil(symFont.getStringWidthFloat(juce::String(symbol))),
                                              pct ? (int)std::ceil(pctFont.getStringWidthFloat(pctText)) : 0);
-        // v0.6.8: cell text over the transparent background gets
-        // the text pop (TextPop.h, corrected geometry).
+        // v0.6.10: cell text draws SINGLE, in its own colour — no
+        // text pop inside cells (Jackson, 2026-11-03, BTC-cell
+        // photo: the doubled copies were illegible at cell sizes).
         g.setFont(symFont);
-        textpop::draw(g, juce::String(symbol), top.removeFromLeft((float)lay.symbolW), juce::Justification::centredLeft, th.text.withAlpha(alpha));
+        textpop::drawSingle(g, juce::String(symbol), top.removeFromLeft((float)lay.symbolW), juce::Justification::centredLeft, th.text.withAlpha(alpha));
         top.removeFromLeft((float)lay.gap);
         if (pct) {
             g.setFont(pctFont);
-            textpop::draw(g, pctText, top.removeFromLeft((float)lay.pctW), juce::Justification::centredRight, owner->gainColour(*pct >= 0).withAlpha(alpha));
+            textpop::drawSingle(g, pctText, top.removeFromLeft((float)lay.pctW), juce::Justification::centredRight, owner->gainColour(*pct >= 0).withAlpha(alpha));
         }
         // price row: price (left) + 1h % (right, v0.2.0 item e — from
         // the hourly candles already fetched for the sparkline; no
@@ -203,11 +204,11 @@ public:
                                               (int)std::ceil(priceFont.getStringWidthFloat(priceText)),
                                               pct1h ? (int)std::ceil(h1Font.getStringWidthFloat(h1Text)) : 0);
         g.setFont(priceFont);
-        textpop::draw(g, priceText, mid.removeFromLeft((float)lay2.symbolW), juce::Justification::centredLeft, th.text.withAlpha(alpha));
+        textpop::drawSingle(g, priceText, mid.removeFromLeft((float)lay2.symbolW), juce::Justification::centredLeft, th.text.withAlpha(alpha));
         mid.removeFromLeft((float)lay2.gap);
         if (pct1h) {
             g.setFont(h1Font);
-            textpop::draw(g, h1Text, mid.removeFromLeft((float)lay2.pctW), juce::Justification::centredRight, owner->gainColour(*pct1h >= 0).withAlpha(alpha));
+            textpop::drawSingle(g, h1Text, mid.removeFromLeft((float)lay2.pctW), juce::Justification::centredRight, owner->gainColour(*pct1h >= 0).withAlpha(alpha));
         }
         // sparkline (24h of hourly closes) or state line
         if (!candles.empty()) {
@@ -229,12 +230,12 @@ public:
             g.setColour(lineCol); g.strokePath(p, juce::PathStrokeType(1.4f));
         } else {
             g.setFont(10.5f);
-            textpop::draw(g, has ? juce::String("chart loading...") : juce::String("waiting for data..."),
+            textpop::drawSingle(g, has ? juce::String("chart loading...") : juce::String("waiting for data..."),
                           r, juce::Justification::centredLeft, th.dim.withAlpha(alpha));
         }
         if (stale && has) {
             g.setFont(juce::Font(9.f, juce::Font::bold));
-            textpop::draw(g, juce::String("STALE"), b.reduced(7.f, 4.f), juce::Justification::bottomRight, th.warn);
+            textpop::drawSingle(g, juce::String("STALE"), b.reduced(7.f, 4.f), juce::Justification::bottomRight, th.warn);
         }
     }
 private:
@@ -274,16 +275,16 @@ public:
         g.setColour(th.border.withAlpha(alpha));
         g.drawRoundedRectangle(b, 8.f, 1.f);
         auto r = b.reduced(9.f, 5.f);
-        // v0.6.8: text pop, same as the coin cells (TextPop.h).
+        // v0.6.10: single draw, same as the coin cells (TextPop.h).
         g.setFont(juce::Font(9.f, juce::Font::bold));
-        textpop::draw(g, title, r.removeFromTop(12.f), juce::Justification::centredLeft, th.dim.withAlpha(alpha));
+        textpop::drawSingle(g, title, r.removeFromTop(12.f), juce::Justification::centredLeft, th.dim.withAlpha(alpha));
         g.setFont(juce::Font(16.5f, juce::Font::bold));
-        textpop::draw(g, has ? valueText : juce::String("--"), r.removeFromTop(24.f), juce::Justification::centredLeft, (has ? valueColour : th.dim).withAlpha(alpha));
+        textpop::drawSingle(g, has ? valueText : juce::String("--"), r.removeFromTop(24.f), juce::Justification::centredLeft, (has ? valueColour : th.dim).withAlpha(alpha));
         g.setFont(10.5f);
-        textpop::draw(g, has ? subText : juce::String("loading..."), r, juce::Justification::centredLeft, th.dim.withAlpha(alpha));
+        textpop::drawSingle(g, has ? subText : juce::String("loading..."), r, juce::Justification::centredLeft, th.dim.withAlpha(alpha));
         if (stale && has) {
             g.setFont(juce::Font(9.f, juce::Font::bold));
-            textpop::draw(g, juce::String("STALE"), b.reduced(7.f, 4.f), juce::Justification::bottomRight, th.warn);
+            textpop::drawSingle(g, juce::String("STALE"), b.reduced(7.f, 4.f), juce::Justification::bottomRight, th.warn);
         }
     }
 };
@@ -1759,8 +1760,18 @@ void MainComponent::snapToDockEdge() {
     auto area = display->totalArea;
     auto b = w->getBounds();
     switch (state.dockEdge) {
-        case tickerbar::DockEdge::Top:    b.setY(area.getY()); break;
-        case tickerbar::DockEdge::Bottom: b.setY(area.getBottom() - b.getHeight()); break;
+        // v0.6.10 (Jackson, 2026-11-03): Reposition to Top/Bottom
+        // must also stretch the bar to the FULL WIDTH of the screen
+        // it is on — x to the screen's left edge, width to the
+        // screen's width — not just move it to the edge at whatever
+        // width it happened to have. Height unchanged; Left/Right
+        // keep their existing behaviour.
+        case tickerbar::DockEdge::Top:    b.setY(area.getY());
+                                          b.setX(area.getX());
+                                          b.setSize(area.getWidth(), b.getHeight()); break;
+        case tickerbar::DockEdge::Bottom: b.setY(area.getBottom() - b.getHeight());
+                                          b.setX(area.getX());
+                                          b.setSize(area.getWidth(), b.getHeight()); break;
         case tickerbar::DockEdge::Left:   b.setX(area.getX()); break;
         case tickerbar::DockEdge::Right:  b.setX(area.getRight() - b.getWidth()); break;
     }
