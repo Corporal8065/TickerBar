@@ -37,7 +37,10 @@
 
 class BarLinkClient : private juce::Timer {
 public:
-    struct Bg { int style = 0; float opacity = 1.0f; int effect = 0; }; // effect: BLK3 (v0.5.6); BLK4 (v0.5.8) adds effect 3 = visualizer Lines
+    struct Bg { int style = 0; float opacity = 1.0f; int effect = 0; // effect: BLK3 (v0.5.6); BLK4 (v0.5.8) adds effect 3 = visualizer Lines
+                // BLK7 (DESIGN §3): the appearance extension rides the packet.
+                int theme = -1; int scheme = -1;
+                float palHue = 0.f, palSat = 0.f, palSpread = 0.f, palCycle = 0.f; };
     // Host callbacks (all message-thread).
     std::function<juce::Rectangle<int>()> getBounds;
     std::function<void(juce::Rectangle<int>)> setBounds;   // position apply (size preserved by the rect itself)
@@ -47,6 +50,10 @@ public:
     std::function<bool()> isLinked;
     std::function<bool()> bgLinkEnabled; // v0.5.6: the host's "Link background" toggle; empty = enabled
     std::function<void(float out[5])> getAudio; // BLK5 (v0.6.5): + stereo balance at [4] // v0.3.0 item 17: band energies [low,mid,high] + level (MeterBar wires this; the others leave it empty)
+    // BLK7 (DESIGN §6d/§6b): link-edge + Link All host hooks.
+    std::function<void(bool)> onLinkEdge;      // OFF->ON (true) fires BEFORE the first adoption can land; ON->OFF (false) after the claim clears — the host snapshots/restores appearance there
+    std::function<void()> onLinkAllForming;    // a Link All request is being consumed — BEFORE any move (host snapshots geometry)
+    std::function<void(bool)> setLinkEnabled;  // Link All turns the host's Link on through its own toggle path
 
     explicit BarLinkClient(int appId) : appId_(appId) {}
     ~BarLinkClient() override { stop(); }
@@ -140,10 +147,52 @@ public:
 #if JUCE_WINDOWS
         Lock lock{ mutex_ };
         if (shared_->magic == tickerbar::kLinkMagic) {
-            shared_->nextLinkSeq += 1;
-            myLinkSeq_ = shared_->nextLinkSeq;
+            // BLK7 claim restore (DESIGN §4): re-stamp the saved
+            // claim when claimFor allows (a parent that crashed /
+            // quit / restarted without a deliberate OFF edge returns
+            // AS the parent); otherwise a fresh counter claim.
+            const unsigned restored = tickerbar::claimFor(*shared_, appId_);
+            if (restored != 0) {
+                myLinkSeq_ = restored;
+                if (shared_->nextLinkSeq < myLinkSeq_) shared_->nextLinkSeq = myLinkSeq_;
+            } else {
+                shared_->nextLinkSeq += 1;
+                myLinkSeq_ = shared_->nextLinkSeq;
+            }
+            shared_->lastClaim[(size_t)appId_] = myLinkSeq_;
             shared_->slots[(size_t)appId_].appId = appId_;
             shared_->slots[(size_t)appId_].linkSeq = myLinkSeq_;
+        }
+#endif
+    }
+
+    // BLK7 (DESIGN §4): the deliberate link OFF edge clears the
+    // saved claim in the block, so unlink->relink returns as a late
+    // joiner. stop()/the destructor must NOT call this.
+    void clearLastClaim() {
+        if (!shared_) return;
+#if JUCE_WINDOWS
+        Lock lock{ mutex_ };
+        if (shared_->magic == tickerbar::kLinkMagic) shared_->lastClaim[(size_t)appId_] = 0;
+#endif
+    }
+
+    // BLK7 LINK ALL initiation (DESIGN §6a): stamp the request into
+    // the block under the mutex — seq bump, edge (0 Top / 1 Bottom
+    // only), the display area the stack docks into, and a reserved
+    // claim base (nextLinkSeq + 3) so MeterBar (base+1) is the
+    // parent by construction when every client consumes it.
+    void requestLinkAll(int edgeOrdinal, juce::Rectangle<int> area) {
+        if (!shared_) return;
+        if (edgeOrdinal != 0 && edgeOrdinal != 1) return;
+#if JUCE_WINDOWS
+        Lock lock{ mutex_ };
+        if (shared_->magic == tickerbar::kLinkMagic) {
+            shared_->linkAllSeq += 1;
+            shared_->linkAllEdge = edgeOrdinal;
+            shared_->linkAllArea = toCore(area);
+            shared_->linkAllBaseSeq = shared_->nextLinkSeq;
+            shared_->nextLinkSeq += 3;
         }
 #endif
     }
@@ -204,6 +253,27 @@ public:
         tickerbar::LinkShared snap;
         if (!readShared(snap)) return false;
         return tickerbar::audioPacket(snap.slots[(size_t)appId], nowMs(), out);
+    }
+
+    // BLK7 (DESIGN §7): a peer's stamped pulse (false = not live / never stamped).
+    bool peerPulse(int appId, unsigned& seq, int& colour, float& strength) {
+        seq = 0; colour = 0; strength = 0.f;
+        if (!shared_ || appId < 0 || appId > 2) return false;
+        tickerbar::LinkShared snap;
+        if (!readShared(snap)) return false;
+        return tickerbar::pulsePacket(snap.slots[(size_t)appId], nowMs(), seq, colour, strength);
+    }
+
+    // BLK7 (DESIGN §6a): a peer's live slot rect (the Link All host
+    // computes the dock display from MeterBar's current slot rect).
+    bool peerSlotRect(int appId, juce::Rectangle<int>& out) {
+        if (!shared_ || appId < 0 || appId > 2) return false;
+        tickerbar::LinkShared snap;
+        if (!readShared(snap)) return false;
+        const auto& sl = snap.slots[(size_t)appId];
+        if (!tickerbar::slotLive(sl, nowMs()) || sl.rect.w <= 0 || sl.rect.h <= 0) return false;
+        out = toJuce(sl.rect);
+        return true;
     }
 
     // Live + linked peer count (the host's Stack button enablement).
@@ -270,9 +340,43 @@ private:
         // a FOLLOWER joining a group with a live parent must not
         // re-stamp over the parent's background; refreshBgOnLinkJoin
         // makes it adopt the parent's standing packet instead.
-        const bool linkedNow = isLinked && isLinked();
-        if (linkedNow && !wasLinked_) { claimLinkSeq(); refreshBgOnLinkJoin(); }
-        if (!linkedNow && wasLinked_) myLinkSeq_ = 0;
+        bool linkedNow = isLinked && isLinked();
+        tickerbar::LinkShared snap0;
+        if (!readShared(snap0)) return;
+        // BLK7 LINK ALL consumption (DESIGN §6b): every client,
+        // incl. the initiator, consumes a fresh linkAllSeq once.
+        if (!linkAllSeenInit_) { seenLinkAllSeq_ = snap0.linkAllSeq; linkAllSeenInit_ = true; }
+        bool linkAllClaimed = false;
+        tickerbar::IntRect linkAllTarget{}; bool hasLinkAllTarget = false;
+        if (snap0.linkAllSeq != seenLinkAllSeq_) {
+            seenLinkAllSeq_ = snap0.linkAllSeq;
+            if (onLinkAllForming) onLinkAllForming(); // host snapshots geometry — BEFORE any move
+            if (!linkedNow && setLinkEnabled) { setLinkEnabled(true); linkedNow = isLinked && isLinked(); }
+            // Claim by construction: MeterBar base+1 < TickerBar
+            // base+2 < SessionBar base+3 — MeterBar is the parent,
+            // no race. REPLACES whatever claim this bar held.
+            myLinkSeq_ = snap0.linkAllBaseSeq + (unsigned)appId_ + 1;
+#if JUCE_WINDOWS
+            { Lock lock{ mutex_ };
+              if (shared_->magic == tickerbar::kLinkMagic) shared_->lastClaim[(size_t)appId_] = myLinkSeq_; }
+#endif
+            linkAllClaimed = true;
+            tickerbar::IntRect targets[3];
+            if (tickerbar::planLinkAll(snap0, now, snap0.linkAllEdge, snap0.linkAllArea, targets) > 0
+                && targets[(size_t)appId_].w > 0) { linkAllTarget = targets[(size_t)appId_]; hasLinkAllTarget = true; }
+        }
+        // Link edges: ON fires the host snapshot BEFORE the first
+        // adoption can land (DESIGN §6d); the normal OFF->ON claim is
+        // skipped when a link-all claim was just stamped (DESIGN
+        // §6b step 4) — refreshBgOnLinkJoin still runs. OFF clears
+        // the saved claim (deliberate unlink, DESIGN §4) and fires
+        // the host restore.
+        if (linkedNow && !wasLinked_) {
+            if (onLinkEdge) onLinkEdge(true);
+            if (!linkAllClaimed) claimLinkSeq();
+            refreshBgOnLinkJoin();
+        }
+        if (!linkedNow && wasLinked_) { clearLastClaim(); if (onLinkEdge) onLinkEdge(false); myLinkSeq_ = 0; }
         wasLinked_ = linkedNow;
         publishBg();
         tickerbar::LinkShared snap;
@@ -302,6 +406,11 @@ private:
         writeSlot(mine);
         snap.slots[(size_t)appId_] = mine;
         lastRect_ = mine.rect;
+        // BLK7: this bar's Link All target (DESIGN §6b step 5).
+        if (hasLinkAllTarget && !sameRect(linkAllTarget, mine.rect)) {
+            applyRemote(linkAllTarget);
+            mine.rect = linkAllTarget;
+        }
         if (!mine.linked) return;
 
         // --- adopt a changed background from any linked peer ---
@@ -310,7 +419,8 @@ private:
         {
             tickerbar::BgPacket pkt;
             if (bgLinkOn() && tickerbar::bgAdoption(snap, appId_, bgSync_, now, pkt) && applyBg)
-                applyBg(Bg{ pkt.style, pkt.opacityPct / 100.0f, pkt.effect });
+                applyBg(Bg{ pkt.style, pkt.opacityPct / 100.0f, pkt.effect, pkt.theme, pkt.scheme,
+                            pkt.palHue, pkt.palSat, pkt.palSpread, pkt.palCycle });
         }
         // --- one-click stack requests (item 12): a peer's fresh
         // stackSeq moves this bar to its planned target ---
@@ -354,7 +464,11 @@ private:
         // groupDockFollows): with both bars docked, each stacks
         // against the other's latest rect and the pair chases forever
         // at tick rate — the 2026-10-29 freeze.
-        if (tickerbar::groupDockFollows(mine.dockedEdge)) {
+        // BLK7 (DESIGN §5): the group parent is EXEMPT — a follower
+        // joining docked no longer drags its parent across the
+        // screen, and a floating parent is never sucked to a docked
+        // follower. Followers still stack against a docked parent.
+        if (tickerbar::groupDockFollows(mine.dockedEdge) && tickerbar::groupDockMovesSelf(snap, appId_, myLinkSeq_, now)) {
         for (auto& s : snap.slots) {
             if (s.appId < 0 || s.appId == appId_ || !s.linked || s.dockedEdge < 0 || !tickerbar::slotLive(s, now)) continue;
             auto target = tickerbar::groupDockRect(s.rect, mine.rect, (tickerbar::DockArg)s.dockedEdge);
@@ -380,8 +494,10 @@ private:
         // Core gate: publish ONLY a value this app has not already
         // published or adopted (adopted values are recorded in
         // bgSync_ by bgAdoption, so an adoption is never re-published
-        // as a local change — the v0.2.0 echo).
-        if (!tickerbar::bgIsLocalChange(bgSync_, bg.style, pct, bg.effect)) return;
+        // as a local change — the v0.2.0 echo). BLK7: the gate
+        // compares all nine packet values (DESIGN §3).
+        if (!tickerbar::bgIsLocalChange(bgSync_, bg.style, pct, bg.effect, bg.theme, bg.scheme,
+                                        bg.palHue, bg.palSat, bg.palSpread, bg.palCycle)) return;
         tickerbar::LinkShared snap;
         if (!readShared(snap)) return;
         tickerbar::LinkSlot mine = snap.slots[(size_t)appId_];
@@ -391,9 +507,16 @@ private:
         mine.bgStyle = bg.style;
         mine.bgOpacityPct = pct;
         mine.bgEffect = bg.effect;
+        mine.bgTheme = bg.theme;
+        mine.bgScheme = bg.scheme;
+        mine.bgPalHue = bg.palHue; mine.bgPalSat = bg.palSat;
+        mine.bgPalSpread = bg.palSpread; mine.bgPalCycle = bg.palCycle;
         mine.bgSeq += 1;
         writeSlot(mine);
         bgSync_.publishedStyle = bg.style; bgSync_.publishedPct = pct; bgSync_.publishedEffect = bg.effect;
+        bgSync_.publishedTheme = bg.theme; bgSync_.publishedScheme = bg.scheme;
+        bgSync_.publishedPalHue = bg.palHue; bgSync_.publishedPalSat = bg.palSat;
+        bgSync_.publishedPalSpread = bg.palSpread; bgSync_.publishedPalCycle = bg.palCycle;
     }
 
     // --- shared-memory plumbing ---
@@ -457,4 +580,6 @@ private:
     unsigned myLinkSeq_ = 0;              // BLK6: this bar's claimed join-order stamp (0 = unlinked)
     bool wasLinked_ = false;              // item 13: link-edge detection for the forced republish
     unsigned seenStackSeq_[3] = { 0, 0, 0 }; // item 12: last stack request consumed per app // v0.2.1: publish/adopt bookkeeping (core decisions)
+    unsigned seenLinkAllSeq_ = 0;         // BLK7: last Link All request consumed
+    bool linkAllSeenInit_ = false;        // BLK7: seenLinkAllSeq_ initialised from the block on the first tick (an old request is not re-consumed at launch)
 };

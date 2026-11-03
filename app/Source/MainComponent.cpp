@@ -22,6 +22,18 @@
 // install of the 0.5.0 Setup.exe had actually worked; the app was
 // misreporting its own version.
 static const juce::String kVersion = juce::String("v") + tickerbar::kVersionString;
+#include "CrashHandler.h" // v0.6.13: hard-crash record (installed in Main.cpp initialise, first thing)
+// v0.6.13 (family crash-log round): TickerBar's Documents folder —
+// crash records (crash-*.txt + .dmp), presets and the folder the
+// "Open Log Folder" actions open.
+static juce::File tickerBarDocsDir() {
+    return juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("TickerBar");
+}
+void MainComponent::openLogFolder() {
+    auto dir = tickerBarDocsDir();
+    dir.createDirectory();
+    dir.revealToUser();
+}
 // (dockEdgeName went with the Dock button at v0.6.0 — the edge is
 // picked by name in the Reposition submenu now.)
 
@@ -169,6 +181,18 @@ public:
             g.setColour(th.border.withAlpha(alpha));
             g.drawRoundedRectangle(b, 8.f, 1.f);
         }
+        // v0.6.13 (DESIGN §7): the linked pulse spends itself on the
+        // BORDER only (TickerBar cells are border-only by design —
+        // no panel fill is added): a brighter border in the pulse
+        // colour while the envelope/pump is live. The alert flash
+        // above keeps precedence.
+        if (!flashing()) {
+            const float spend = owner->cellPulseSpend();
+            if (spend > 0.01f) {
+                g.setColour(owner->cellPulseColour().withAlpha(0.5f * spend * alpha));
+                g.drawRoundedRectangle(b.reduced(0.5f), 8.f, 1.4f);
+            }
+        }
         auto r = b.reduced(9.f, 5.f);
         // top row: symbol (left) + 24h % (right). v0.2.0 layout rule
         // (core Layout.hpp, unit-tested): the % is measured and
@@ -282,6 +306,15 @@ public:
         // v0.4.0 rule, shared with the coin cells: border only.
         g.setColour(th.border.withAlpha(alpha));
         g.drawRoundedRectangle(b, 8.f, 1.f);
+        // v0.6.13 (DESIGN §7): linked-pulse border brightening, same
+        // spend as the coin cells (border only — no panel fill).
+        {
+            const float spend = owner->cellPulseSpend();
+            if (spend > 0.01f) {
+                g.setColour(owner->cellPulseColour().withAlpha(0.5f * spend * alpha));
+                g.drawRoundedRectangle(b.reduced(0.5f), 8.f, 1.4f);
+            }
+        }
         auto r = b.reduced(9.f, 5.f);
         // top row: title (left) + day-change % (right), the core
         // never-truncate layout — the % reserves in full, the title clips.
@@ -859,6 +892,8 @@ public:
             buttonRow("Check for updates", "GitHub",
                       [this]{ owner->checkForUpdates(); },
                       []{ juce::URL("https://github.com/Corporal8065/TickerBar").launchInDefaultBrowser(); });
+            button("Open Log Folder", [this]{ owner->openLogFolder(); }); // v0.6.13: crash records live in Documents\\TickerBar
+            note("Crash records: if TickerBar ever hard-crashes it leaves a crash-*.txt + .dmp in Documents\\TickerBar - send both to Milo.");
             note("TickerBar " + kVersion + " - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
             note("Detail chart: candlesticks + volume with 24h / 7d / 30d ranges. Coinbase caps one candles request at 300: 24h/7d are hourly, 30d is daily. CoinGecko (HYPE) supplies hourly closes only - no OHLC, no volume, no 30d - and the chart note says so.");
             note("Polls every N seconds (Window panel). If the feed drops, cells grey out and keep the last real prices, marked STALE - never fake-fresh numbers.");
@@ -1066,17 +1101,94 @@ MainComponent::MainComponent() {
             w->setBounds(safe.x, safe.y, safe.w, safe.h);
         }
     };
-    linkClient_.getBg = [this]{ return BarLinkClient::Bg{ (int)state.backgroundStyle, state.backgroundOpacity, state.bgEffect == 1 ? (state.vizStyle == 1 ? 3 : state.vizStyle == 2 ? 4 : 1) : state.bgEffect }; }; // BLK4: the visualizer style rides the effect ordinal (1 Bubbles / 3 Lines); BLK5 (v0.6.5): 4 = Field
+    linkClient_.getBg = [this]{
+        // BLK7 (DESIGN §2/§3): theme ordinal = index into the shared
+        // themeNameList (0-5 = the family list); scheme rides
+        // verbatim (0-4 = the family list); palette floats verbatim.
+        auto names = themeNameList();
+        const int themeOrd = juce::jmax(0, names.indexOf(juce::String(state.themeName)));
+        return BarLinkClient::Bg{ (int)state.backgroundStyle, state.backgroundOpacity, state.bgEffect == 1 ? (state.vizStyle == 1 ? 3 : state.vizStyle == 2 ? 4 : 1) : state.bgEffect,
+                                  themeOrd, state.dataColorScheme,
+                                  state.vizHue, state.vizSat, state.vizSpread, state.vizCycle };
+    }; // BLK4: the visualizer style rides the effect ordinal (1 Bubbles / 3 Lines); BLK5 (v0.6.5): 4 = Field
     linkClient_.applyBg = [this](const BarLinkClient::Bg& bg){
+        // Follower apply order (DESIGN §3): background (existing
+        // mapping preserved exactly), then theme, then scheme, then
+        // palette.
         state.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 3, bg.style);
-        state.backgroundOpacity = juce::jlimit(0.05f, 1.0f, bg.opacity);
+        state.backgroundOpacity = juce::jlimit(0.15f, 1.0f, bg.opacity); // v0.6.13 (DESIGN §8): stored clamp aligned 0.05 -> 0.15 (loader + every render path + the family)
         // BLK4: effect 3 = the visualizer with the Lines style,
         // effect 1 = the visualizer with Bubbles; 0/2 as before.
         if (bg.effect == 3) { state.bgEffect = 1; state.vizStyle = 1; }
         else if (bg.effect == 4) { state.bgEffect = 1; state.vizStyle = 2; } // BLK5: Field
         else if (bg.effect == 1) { state.bgEffect = 1; state.vizStyle = 0; }
         else state.bgEffect = juce::jlimit(0, 2, bg.effect);
+        // Theme: ordinal -> local name via the shared list; an
+        // out-of-range ordinal leaves the theme unchanged.
+        if (bg.theme >= 0) {
+            auto names = themeNameList();
+            if (bg.theme < names.size()) { state.themeName = names[bg.theme].toStdString(); applyTheme(); }
+        }
+        // Scheme: family 0-4 apply verbatim; 5-7 (MeterBar-only
+        // extensions) keep this bar's own scheme (DESIGN §2).
+        if (bg.scheme >= 0 && bg.scheme <= 4) state.dataColorScheme = bg.scheme;
+        // Palette: plain field assignment (read live per fx frame).
+        state.vizHue = bg.palHue; state.vizSat = bg.palSat; state.vizSpread = bg.palSpread; state.vizCycle = bg.palCycle;
         saveSettings(); repaint(); syncFxPump(); // an adopted visualizer/glow must actually start (or stop)
+    };
+    // v0.6.13 (DESIGN §6d): appearance snapshot/restore on link
+    // edges. ON (any cause — toggle, Link All): snapshot BEFORE the
+    // first adoption can land. OFF: restore through the normal
+    // settings-changed path (the file returns to the pre-link
+    // appearance values) and, for a Link All-formed link, move back
+    // to the pre-Link-All rect.
+    linkClient_.onLinkEdge = [this](bool on){
+        if (on) {
+            if (!linkSnap_.held) {
+                linkSnap_.held = true;
+                linkSnap_.backgroundStyle = (int)state.backgroundStyle;
+                linkSnap_.backgroundOpacity = state.backgroundOpacity;
+                linkSnap_.bgEffect = state.bgEffect; linkSnap_.vizStyle = state.vizStyle;
+                linkSnap_.themeName = state.themeName;
+                linkSnap_.dataColorScheme = state.dataColorScheme;
+                linkSnap_.vizHue = state.vizHue; linkSnap_.vizSat = state.vizSat;
+                linkSnap_.vizSpread = state.vizSpread; linkSnap_.vizCycle = state.vizCycle;
+            }
+        } else {
+            const bool hadSnap = linkSnap_.held;
+            if (hadSnap) {
+                state.backgroundStyle = (tickerbar::BackgroundStyle)juce::jlimit(0, 3, linkSnap_.backgroundStyle);
+                state.backgroundOpacity = linkSnap_.backgroundOpacity;
+                state.bgEffect = linkSnap_.bgEffect; state.vizStyle = linkSnap_.vizStyle;
+                state.themeName = linkSnap_.themeName;
+                state.dataColorScheme = linkSnap_.dataColorScheme;
+                state.vizHue = linkSnap_.vizHue; state.vizSat = linkSnap_.vizSat;
+                state.vizSpread = linkSnap_.vizSpread; state.vizCycle = linkSnap_.vizCycle;
+                linkSnap_.held = false;
+            }
+            const bool hadRect = linkAllRectHeld_;
+            const auto rect = linkAllRect_;
+            linkAllRectHeld_ = false;
+            if (hadSnap) settingsChanged(false); // normal path: applyTheme + persist + repaint
+            if (hadRect) {
+                // Move back AFTER the settings path (its save re-reads
+                // the live rect); the bounds-change save that follows
+                // the move persists the restored rect.
+                if (auto* w = findParentComponentOfClass<juce::DocumentWindow>()) w->setBounds(rect);
+            }
+        }
+    };
+    linkClient_.onLinkAllForming = [this]{
+        if (!linkAllRectHeld_) { linkAllRect_ = currentWindowBounds(); linkAllRectHeld_ = true; }
+    };
+    linkClient_.setLinkEnabled = [this](bool on){
+        // Exactly the Link toggle's own writes (state + persist).
+        if (state.linkEnabled != on) {
+            state.linkEnabled = on;
+            linkBtn_.setToggleState(on, juce::dontSendNotification);
+            saveSettings();
+            syncFxPump(); // v0.6.13: the fx pump runs while linked (cell pulse)
+        }
     };
     linkClient_.getDockedEdge = [this]{
         return reserveMachine_.reserved() ? (int)reserveMachine_.edge() : -1;
@@ -1134,6 +1246,62 @@ MainComponent::MainComponent() {
     setSize(state.windowW, state.windowH);
     // v0.3.0 item 1: silent background update check on launch.
     if (tbupdate::configured()) startUpdateCheck(true);
+    // v0.6.13: NEXT-LAUNCH CRASH NOTICE (family crash-log contract).
+    // The crash handler (CrashHandler.h, installed in Main.cpp)
+    // leaves crash-*.txt + .dmp in Documents\\TickerBar; a crash
+    // file without a ".seen" sibling earns exactly one notice,
+    // however many launches it survives. Deferred via callAsync so
+    // the bar is fully up before the dialog appears. Either button
+    // marks every unseen crash seen.
+    juce::MessageManager::callAsync([this]{
+        auto dir = tickerBarDocsDir();
+        dir.createDirectory();
+        // FALLBACK HARVEST (route C, DESIGN §9 amendment): heap-
+        // corruption / fast-fail deaths bypass BOTH in-process
+        // handlers (MeterBar v0.28.3 field finding) — but WER's own
+        // dump lands in %LOCALAPPDATA%\CrashDumps. Copy any of this
+        // app's dumps not already harvested into Documents\TickerBar
+        // so the notice + folder flow below surfaces them too.
+        {
+            auto crashDumps = juce::File::getSpecialLocation(juce::File::userHomeDirectory)
+                                  .getChildFile("AppData").getChildFile("Local").getChildFile("CrashDumps");
+            std::vector<std::string> docsNames;
+            for (auto& f : dir.findChildFiles(juce::File::findFiles, false))
+                docsNames.push_back(f.getFileName().toStdString());
+            for (auto& f : crashDumps.findChildFiles(juce::File::findFiles, false)) {
+                const std::string name = f.getFileName().toStdString();
+                if (tickerbar::shouldHarvestDump(name, docsNames))
+                    f.copyFileTo(dir.getChildFile(f.getFileName()));
+            }
+        }
+        std::vector<std::string> names;
+        for (auto& f : dir.findChildFiles(juce::File::findFiles, false))
+            names.push_back(f.getFileName().toStdString());
+        auto unseen = tickerbar::unseenCrashes(names);
+        auto unseenDumps = tickerbar::unseenHarvestedDumps(names);
+        // Dumps already paired with a crash-*.txt record are counted
+        // by that record; the harvest notice covers ORPHAN dumps
+        // (the filter-bypassed crashes — no .txt exists for them).
+        if (unseen.empty() && unseenDumps.empty()) return;
+        const int count = (int)unseen.size() + (int)unseenDumps.size();
+        auto w = std::make_shared<juce::AlertWindow>("TickerBar crashed",
+            "TickerBar crashed " + juce::String(count) + (count == 1 ? " time" : " times") +
+            " since you last saw this notice.\nThe crash record" + (count == 1 ? " is" : "s are") +
+            " in Documents\\TickerBar (crash-*.txt + .dmp).\nOpen the folder to send them to Milo?",
+            juce::AlertWindow::WarningIcon);
+        w->addButton("Open Log Folder", 1); w->addButton("Dismiss", 0);
+        w->enterModalState(true, juce::ModalCallbackFunction::create([this, unseen, unseenDumps](int r){
+            for (auto& n : unseen) {
+                auto seen = tickerBarDocsDir().getChildFile(juce::String(tickerbar::seenMarkerFor(n)));
+                seen.create();
+            }
+            for (auto& n : unseenDumps) { // dismiss-once per harvested file
+                auto seen = tickerBarDocsDir().getChildFile(juce::String(n) + ".seen");
+                seen.create();
+            }
+            if (r == 1) openLogFolder();
+        }));
+    });
 }
 
 MainComponent::~MainComponent() {
@@ -1813,6 +1981,16 @@ void MainComponent::refreshStatus() {
 }
 
 void MainComponent::timerCallback() {
+    // v0.6.13: keep the crash handler's state snapshot current —
+    // the last state the app can honestly know (feed, link, section).
+    {
+        juce::String snap;
+        snap << "feed: " << (feed_ == tickerbar::FeedStatus::Live ? "live" : feed_ == tickerbar::FeedStatus::Stale ? "stale" : "down") << "\n";
+        snap << "link: " << (state.linkEnabled ? "on" : "off") << "\n";
+        snap << "watchlist: " << juce::String((int)state.watchlist.size()) << " symbols\n";
+        snap << "rotation section: " << juce::String(rotationSection()) << "\n";
+        crashhandler::setStateSnapshot(snap.toRawUTF8());
+    }
     pollUpdater();
     refreshStatus();
     refreshContext(); // age-based stale transitions need no new data to show
@@ -2193,6 +2371,33 @@ void MainComponent::doStackAll() {
 }
 
 // =====================================================================
+// v0.6.13 (DESIGN §6): LINK ALL — one click links all three bars
+// and stacks them MeterBar -> TickerBar -> SessionBar at the top
+// or bottom edge, all at the same full width, MeterBar as link
+// parent. This host only stamps the request (§6a): the area is the
+// bounds (user area) of the display containing MeterBar's current
+// slot rect when MeterBar's slot is live, else the display this
+// bar is on. Every client (incl. this one) consumes it on its tick.
+// Menu surface (DESIGN §6e as amended by Jackson 2026-11-03
+// ~14:03 PT): option B ONLY — "Link All → Top" / "Link All →
+// Bottom"; no auto-edge (MeterBar's edge) item.
+// =====================================================================
+void MainComponent::doLinkAll(int edgeOrdinal) {
+    if (edgeOrdinal != 0 && edgeOrdinal != 1) return;
+    juce::Rectangle<int> area;
+    juce::Rectangle<int> meterRect;
+    auto& displays = juce::Desktop::getInstance().getDisplays();
+    if (linkClient_.peerSlotRect(tickerbar::kLinkAppMeter, meterRect)) {
+        area = displays.getDisplayContaining(meterRect.getCentre()).userArea;
+    } else {
+        auto b = currentWindowBounds();
+        area = displays.getDisplayContaining(b.getCentre()).userArea;
+    }
+    if (area.isEmpty()) return;
+    linkClient_.requestLinkAll(edgeOrdinal, area);
+}
+
+// =====================================================================
 // v0.3.0 item 2: named presets (MeterBar's menu pattern). A preset
 // is a FULL configuration — window position included — and loading
 // one moves the bar (clamped on-screen via the core guard).
@@ -2229,7 +2434,8 @@ void MainComponent::doStackAll() {
 enum { mnArrange = 1, mnRestore, mnStack, mnMinimize, mnQuit, mnCheckUpdates,
        mnPresetNew = 10, mnPresetSave, mnPresetSaveAs, mnPresetFolder, mnPresetLoadBase = 1000,
        mnEdgeTop = 20, mnEdgeBottom, mnEdgeLeft, mnEdgeRight, mnPin, mnReserve, mnDisplayBase = 2000,
-       mnSectionBase = 3000 }; // v0.6.11: + RotationSection ordinal
+       mnSectionBase = 3000, // v0.6.11: + RotationSection ordinal
+       mnOpenLogFolder = 4000, mnLinkAllTop = 4001, mnLinkAllBottom = 4002 }; // v0.6.13
 juce::PopupMenu MainComponent::buildRepositionSubMenu() {
     juce::PopupMenu m;
     const int edge = (int)state.dockEdge;
@@ -2275,6 +2481,14 @@ void MainComponent::showMainMenu() {
     m.addItem(mnArrange, "Arrange Windows");
     m.addItem(mnRestore, "Restore Windows");
     m.addItem(mnStack, "Stack Linked Bars");
+    // v0.6.13 (DESIGN §6e, option B per Jackson 2026-11-03): the
+    // Link All submenu — exactly two items.
+    {
+        juce::PopupMenu la;
+        la.addItem(mnLinkAllTop, juce::String::fromUTF8("Link All \xe2\x86\x92 Top"));
+        la.addItem(mnLinkAllBottom, juce::String::fromUTF8("Link All \xe2\x86\x92 Bottom"));
+        m.addSubMenu("Link All", la);
+    }
     m.addSubMenu("Reposition", buildRepositionSubMenu());
     // v0.6.11: the rotation-section switcher (the Settings >
     // Rotation combo is the same choice over the same field).
@@ -2286,6 +2500,7 @@ void MainComponent::showMainMenu() {
     }
     m.addSeparator();
     m.addItem(mnCheckUpdates, "Check for updates");
+    m.addItem(mnOpenLogFolder, "Open Log Folder"); // v0.6.13: crash records, reachable outside Settings
     m.addItem(mnMinimize, "Minimize");
     m.addItem(mnQuit, "Quit");
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(burgerBtn_), [this, presetFiles](int r) {
@@ -2306,6 +2521,13 @@ void MainComponent::showMainMenu() {
         else if (r == mnArrange) doArrange();
         else if (r == mnRestore) doRestore();
         else if (r == mnCheckUpdates) checkForUpdates();
+        else if (r == mnOpenLogFolder) openLogFolder();
+        else if (r == mnLinkAllTop || r == mnLinkAllBottom) {
+            // Deferred like Stack: stamping from inside the popup
+            // callback can move windows while the menu is closing.
+            const int edge = (r == mnLinkAllTop) ? 0 : 1;
+            juce::MessageManager::callAsync([this, edge]{ doLinkAll(edge); });
+        }
         else if (r == mnMinimize) { if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
                                         if (auto* peer = w->getPeer()) peer->setMinimised(true); }
         else if (r == mnQuit) juce::JUCEApplication::getInstance()->systemRequestedQuit();
@@ -2567,7 +2789,10 @@ tickerbar::GlowSettings MainComponent::glowSettings() const {
     return gs;
 }
 void MainComponent::syncFxPump() {
-    fxPump_.setRunning(state.bgEffect != 0 || (mascot_ && mascot_->isVisible()) || marqueeActive_);
+    // v0.6.13 (DESIGN §7): the pump also runs while LINKED — the
+    // cell pulse is driven from MeterBar's packet even when no
+    // background effect is selected (SessionBar's gate shape).
+    fxPump_.setRunning(state.bgEffect != 0 || state.linkEnabled || (mascot_ && mascot_->isVisible()) || marqueeActive_);
 }
 void MainComponent::stepFx() {
     const float dt = 1.f / 30.f;
@@ -2575,10 +2800,33 @@ void MainComponent::stepFx() {
     float bands[3] = { 0.f, 0.f, 0.f }, level = 0.f;
     float pkt[5];
     float balance = 0.f; // v0.6.5: MeterBar's stereo balance steers the distributed emitters
-    if (state.linkEnabled && linkClient_.peerAudio(tickerbar::kLinkAppMeter, pkt)) {
+    const bool havePeerAudio = state.linkEnabled && linkClient_.peerAudio(tickerbar::kLinkAppMeter, pkt);
+    if (havePeerAudio) {
         bands[0] = pkt[0]; bands[1] = pkt[1]; bands[2] = pkt[2]; level = pkt[3]; balance = pkt[4];
     } else {
         tickerbar::ambientBands(fxClock_, bands, level);
+    }
+    // v0.6.13 (DESIGN §7): the CELLS' pulse envelope — fed ONLY
+    // from the real linked packet (ambient bands never move the
+    // cells, so unlinked rendering is untouched), through core
+    // CellPulse's attack/release smoothing; plus the BLK7 discrete
+    // pulse edge: a fresh pulseSeq from MeterBar's slot fires a
+    // coloured impulse. Cells repaint while lit, and once as it dies.
+    {
+        const float silent[3] = { 0.f, 0.f, 0.f };
+        cellPulse_.update(dt, havePeerAudio ? bands : silent, havePeerAudio ? level : 0.f);
+        unsigned pseq = 0; int pcol = 0; float pstr = 0.f;
+        if (state.linkEnabled && linkClient_.peerPulse(tickerbar::kLinkAppMeter, pseq, pcol, pstr)
+            && pseq != seenPulseSeq_) {
+            seenPulseSeq_ = pseq;
+            cellPulse_.fire(pcol, pstr);
+        }
+        const bool lit = cellPulse_.glow() > 0.01f || cellPulse_.pump() > 0.01f;
+        if (lit || cellPulseWasLit_) {
+            for (auto& c : cells_) c->repaint();
+            for (auto& c : quoteCells_) c->repaint();
+        }
+        cellPulseWasLit_ = lit;
     }
     // v0.5.8: advance whichever visualizer style is selected —
     // the particle engine (Bubbles) or the ribbon model (Lines).

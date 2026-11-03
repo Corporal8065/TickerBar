@@ -1,6 +1,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
+#include "CrashHandler.h" // v0.6.13: hard-crash record (family crash-log round)
 #include "TickerBarVersion.h" // v0.5.3: generated — single-source version (root CMakeLists project VERSION)
 #include <tickerbar/WindowGeom.hpp> // v0.3.0: startup position clamp (never restore off-screen)
 #if JUCE_WINDOWS
@@ -92,6 +93,9 @@ public:
     const juce::String getApplicationVersion() override { return tickerbar::kVersionString; }
     bool moreThanOneInstanceAllowed() override { return false; }
     void initialise(const juce::String&) override {
+        // v0.6.13: install the hard-crash handler FIRST — before the
+        // splash and the main window (MeterBar v0.28.3 ordering).
+        crashhandler::install(tickerbar::kVersionString);
         // JUCE free-license attribution splash (MeterBar v0.15 pattern):
         // small, brief — "Made with JUCE" for ~1.5 s, click dismisses.
         juce::Image splashImg(juce::Image::RGB, 440, 160, true);

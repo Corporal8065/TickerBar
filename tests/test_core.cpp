@@ -21,6 +21,8 @@
 #include <tickerbar/Layout.hpp>
 #include <tickerbar/State.hpp>
 #include <tickerbar/BarLink.hpp>
+#include <tickerbar/CellPulse.hpp> // v0.6.13: ported from SessionBar v0.4.16 + BLK7 fire()
+#include <tickerbar/CrashWatch.hpp> // v0.6.13: crash-record naming/notice logic
 #include <tickerbar/SemVer.hpp>
 #include <tickerbar/ReleaseParse.hpp>
 #include <tickerbar/WindowGeom.hpp>
@@ -764,8 +766,9 @@ int main() {
     CHECK(bgAdoption(shT, 2, syT, now, out));
     CHECK(syT.adoptedFrom == 1 && out.style == 0 && out.opacityPct == 100 && out.effect == 0);
     // the magic / packet layout did NOT move in v0.6.8 (BLK6 family
-    // compatibility with already-shipped builds)
-    CHECK(kLinkMagic == 0x424C4B36u);
+    // compatibility with already-shipped builds) — it moves in
+    // v0.6.13 (BLK7, below)
+    CHECK(kLinkMagic == 0x424C4B37u);
 }
 {
     using namespace tickerbar;
@@ -972,7 +975,7 @@ int main() {
         CHECK(quiet.visibility() == 0.f);
         // BLK5: the magic moved with the widened domain, and the
         // stereo balance rides the audio packet at [4]
-        CHECK(kLinkMagic == 0x424C4B36u); // BLK6
+        CHECK(kLinkMagic == 0x424C4B37u); // BLK7 (v0.6.13)
         LinkSlot slot; slot.appId = 1; slot.heartbeatMs = 1000; slot.audioSeq = 3;
         slot.audioLow = 0.1f; slot.audioMid = 0.2f; slot.audioHigh = 0.3f; slot.audioLevel = 0.4f; slot.audioBalance = 0.7f;
         float pkt[5] = { 0, 0, 0, 0, 0 };
@@ -1712,6 +1715,264 @@ int main() {
     }
     // ================= end v0.6.12 Hyperliquid section =================
 
+
+// ---- v0.6.13: BLK7 — nine-field adoption, claim restore, group-dock
+// parent exemption, planLinkAll, CellPulse port + fire, CrashWatch ----
+{
+    using namespace tickerbar;
+    const long long now = 500000;
+    CHECK(kLinkMagic == 0x424C4B37u); // "BLK7"
+    // NINE-FIELD ADOPTION: the parent's theme/scheme/palette ride
+    // the packet downhill with style/opacity/effect.
+    LinkShared sh;
+    auto& par = sh.slots[0]; par.appId = 0; par.linked = 1; par.heartbeatMs = now; par.linkSeq = 1;
+    par.bgSeq = 5; par.bgStyle = 1; par.bgOpacityPct = 70; par.bgEffect = 2;
+    par.bgTheme = 4; par.bgScheme = 2; par.bgPalHue = 0.25f; par.bgPalSat = 0.5f; par.bgPalSpread = 0.75f; par.bgPalCycle = 12.f;
+    auto& fol = sh.slots[1]; fol.appId = 1; fol.linked = 1; fol.heartbeatMs = now; fol.linkSeq = 2; fol.bgSeq = 3;
+    BgSyncState sy; BgPacket out;
+    CHECK(bgAdoption(sh, 1, sy, now, out));
+    CHECK(out.style == 1 && out.opacityPct == 70 && out.effect == 2);
+    CHECK(out.theme == 4 && out.scheme == 2);
+    CHECK(out.palHue == 0.25f && out.palSat == 0.5f && out.palSpread == 0.75f && out.palCycle == 12.f);
+    // adopted = published for ALL nine: no echo, gate settled
+    CHECK(!bgIsLocalChange(sy, 1, 70, 2, 4, 2, 0.25f, 0.5f, 0.75f, 12.f));
+    CHECK(bgIsLocalChange(sy, 1, 70, 2, 3, 2, 0.25f, 0.5f, 0.75f, 12.f));   // theme moved
+    CHECK(bgIsLocalChange(sy, 1, 70, 2, 4, 2, 0.25f, 0.5f, 0.75f, 13.f));   // palette moved
+    CHECK(!bgAdoption(sh, 1, sy, now, out));
+    // DIVERGED GATE (nine fields): the follower locally changes ONLY
+    // its palette while linked — same parent bgSeq, already seen —
+    // adoption re-fires and restores the parent's palette.
+    sy.publishedPalHue = 0.99f;
+    CHECK(bgAdoption(sh, 1, sy, now, out));
+    CHECK(out.palHue == 0.25f && sy.publishedPalHue == 0.25f);
+    CHECK(!bgAdoption(sh, 1, sy, now, out));
+    // ...and ONLY its theme:
+    sy.publishedTheme = 0;
+    CHECK(bgAdoption(sh, 1, sy, now, out));
+    CHECK(out.theme == 4 && sy.publishedTheme == 4);
+    // THE PARENT NEVER ADOPTS (all nine fields in the followers'
+    // slots do not matter):
+    fol.bgTheme = 5; fol.bgScheme = 4; fol.bgPalHue = 0.9f; fol.bgSeq = 9;
+    BgSyncState syP;
+    CHECK(!bgAdoption(sh, 0, syP, now, out));
+    CHECK(syP.adoptedFrom == -1 && syP.publishedStyle == -999);
+}
+{
+    using namespace tickerbar;
+    const long long now = 600000;
+    // CLAIM RESTORE (DESIGN §4), via the pure claimFor rule:
+    LinkShared sh;
+    sh.lastClaim[1] = 7;
+    CHECK(claimFor(sh, 1) == 7);            // saved, unheld -> re-stamp
+    sh.slots[1].appId = 1; sh.slots[1].linkSeq = 7; // own previous incarnation's slot
+    CHECK(claimFor(sh, 1) == 7);            // still reclaimable (the restart case)
+    sh.slots[0].appId = 0; sh.slots[0].linkSeq = 7; // ANOTHER app holds the value
+    CHECK(claimFor(sh, 1) == 0);            // live-holder collision -> fresh claim
+    sh.lastClaim[2] = 0;
+    CHECK(claimFor(sh, 2) == 0);            // nothing saved (deliberate unlink cleared it) -> fresh claim
+    CHECK(claimFor(sh, 0) == 0);            // never claimed
+    CHECK(claimFor(sh, 3) == 0 && claimFor(sh, -1) == 0); // out of range
+    // Link All reserved claims: base+appId+1 ordering (MeterBar parent)
+    sh.linkAllBaseSeq = 20;
+    CHECK(sh.linkAllBaseSeq + 0 + 1 < sh.linkAllBaseSeq + 1 + 1);
+    CHECK(sh.linkAllBaseSeq + 1 + 1 < sh.linkAllBaseSeq + 2 + 1);
+}
+{
+    using namespace tickerbar;
+    const long long now = 700000;
+    // GROUP-DOCK PARENT EXEMPTION (DESIGN §5):
+    LinkShared sh;
+    auto& par = sh.slots[0]; par.appId = 0; par.linked = 1; par.heartbeatMs = now; par.linkSeq = 1; par.dockedEdge = -1; par.rect = { 300, 300, 800, 50 };
+    auto& fol = sh.slots[1]; fol.appId = 1; fol.linked = 1; fol.heartbeatMs = now; fol.linkSeq = 2; fol.dockedEdge = 0; fol.rect = { 0, 0, 1920, 96 };
+    CHECK(bgParentApp(sh, 0, 1, now) == 0);
+    CHECK(!groupDockMovesSelf(sh, 0, 1, now)); // parent + docked floating peer -> NO move
+    CHECK(groupDockMovesSelf(sh, 1, 2, now));  // follower + docked parent -> move (unchanged)
+}
+{
+    using namespace tickerbar;
+    const long long now = 800000;
+    // planLinkAll (DESIGN §6c): full group, both edges.
+    LinkShared sh;
+    const int heights[3] = { 100, 96, 80 };
+    for (int a = 0; a < 3; ++a) { auto& sl = sh.slots[a]; sl.appId = a; sl.heartbeatMs = now; sl.rect = { 50, 50, 700, heights[a] }; }
+    sh.slots[1].linked = 0; // running-but-unlinked IS included
+    IntRect area{ 0, 0, 1920, 1080 };
+    IntRect tg[3];
+    CHECK(planLinkAll(sh, now, 0, area, tg) == 3);
+    CHECK(tg[0].x == 0 && tg[0].y == 0 && tg[0].w == 1920 && tg[0].h == 100);
+    CHECK(tg[1].x == 0 && tg[1].y == 100 && tg[1].w == 1920 && tg[1].h == 96);   // contiguous, widths equalised, heights preserved
+    CHECK(tg[2].x == 0 && tg[2].y == 196 && tg[2].w == 1920 && tg[2].h == 80);
+    CHECK(planLinkAll(sh, now, 1, area, tg) == 3);
+    CHECK(tg[2].y + tg[2].h == 1080 && tg[2].h == 80);  // SessionBar flush to the bottom edge
+    CHECK(tg[1].y + tg[1].h == tg[2].y && tg[0].y + tg[0].h == tg[1].y); // visual order stays 0,1,2 top-to-bottom
+    CHECK(tg[0].w == 1920 && tg[1].w == 1920 && tg[2].w == 1920);
+    // Middle bar absent (stale heartbeat): skipped, the other two stay contiguous.
+    sh.slots[1].heartbeatMs = now - kPeerStaleMs - 1;
+    CHECK(planLinkAll(sh, now, 0, area, tg) == 2);
+    CHECK(tg[1].w == 0);
+    CHECK(tg[2].y == 100 && tg[2].h == 80);
+    CHECK(planLinkAll(sh, now, 1, area, tg) == 2);
+    CHECK(tg[2].y + tg[2].h == 1080 && tg[0].y + tg[0].h == tg[2].y);
+    // Only MeterBar live:
+    sh.slots[2].heartbeatMs = now - kPeerStaleMs - 1;
+    CHECK(planLinkAll(sh, now, 0, area, tg) == 1);
+    CHECK(tg[0].w == 1920 && tg[0].h == 100 && tg[2].w == 0);
+    // Bad edge / empty area: nobody moves.
+    CHECK(planLinkAll(sh, now, 2, area, tg) == 0);
+    CHECK(planLinkAll(sh, now, 0, IntRect{}, tg) == 0);
+}
+{
+    using namespace tickerbar;
+    // PULSE PACKET: live + stamped only.
+    LinkSlot sl; sl.appId = 0; sl.heartbeatMs = 1000;
+    unsigned seq = 0; int col = 0; float str = 0.f;
+    CHECK(!pulsePacket(sl, 1000, seq, col, str)); // never stamped
+    sl.pulseSeq = 3; sl.pulseColour = 0xE04C89; sl.pulseStrength = 0.8f;
+    CHECK(pulsePacket(sl, 1000, seq, col, str));
+    CHECK(seq == 3 && col == 0xE04C89 && str == 0.8f);
+    CHECK(!pulsePacket(sl, 1000 + kPeerStaleMs + 1, seq, col, str)); // stale
+}
+{
+    using namespace tickerbar;
+    // CellPulse — ported SessionBar v0.4.16 cases:
+    CellPulse cp;
+    CHECK(cp.glow() == 0.f && cp.dotScale() == 1.f); // silence is exactly zero
+    const float loud[3] = { 0.9f, 0.8f, 0.7f };
+    cp.update(0.f, loud, 0.9f);
+    CHECK(cp.glow() == 0.f); // zero dt is a no-op
+    float prev = 0.f, maxStep = 0.f;
+    for (int i = 0; i < 60; ++i) {
+        cp.update(1.f / 30.f, loud, 0.9f);
+        const float g = cp.glow();
+        if (i > 0 && g - prev > maxStep) maxStep = g - prev;
+        prev = g;
+    }
+    CHECK(maxStep < 0.20f);        // rises smoothly, never one-frame full
+    CHECK(cp.glow() > 0.5f);
+    CHECK(cp.glow() <= 1.f && cp.dotScale() > 1.f && cp.dotScale() <= 1.36f);
+    CellPulse fl; float last = 0.f; bool settled = true;
+    for (int i = 0; i < 240; ++i) { // flicker pin: raw alternating bands barely move the smoothed glow once settled
+        const float b[3] = { (i % 2) ? 1.f : 0.f, (i % 2) ? 0.8f : 0.f, 0.f };
+        fl.update(1.f / 30.f, b, 0.4f);
+        if (i >= 120 && std::abs(fl.glow() - last) > 0.10f) settled = false;
+        last = fl.glow();
+    }
+    CHECK(settled);
+    CellPulse on;
+    const float hit[3] = { 1.f, 1.f, 1.f };
+    on.update(1.f / 30.f, hit, 1.f);
+    CHECK(on.pump() > 0.7f); // onset slam
+    const float zero[3] = { 0.f, 0.f, 0.f };
+    float lastPump = on.pump(); bool monotone = true;
+    for (int i = 0; i < 90; ++i) { on.update(1.f / 30.f, zero, 0.f); if (on.pump() > lastPump) monotone = false; lastPump = on.pump(); }
+    CHECK(monotone && on.glow() < 0.01f); // decays back to no glow in silence
+    // BLK7 fire() cases:
+    CellPulse fp;
+    CHECK(!fp.firedLive());
+    fp.fire(0xE04C89, 0.8f);
+    CHECK(fp.pump() == 0.8f);                 // pump slams TO the stamped strength
+    CHECK(fp.firedColour() == 0xE04C89);
+    CHECK(fp.firedLive());                    // paint spends the fired colour while the pump is live
+    fp.fire(0x112233, 0.1f);
+    CHECK(fp.pump() == 0.35f);                // minimum 0.35: quiet hits still read
+    CHECK(fp.firedColour() == 0x112233);
+    fp.fire(0xFF0000, 5.f);
+    CHECK(fp.pump() == 1.f);                  // strength clamped to 1
+    for (int i = 0; i < 120; ++i) fp.update(1.f / 30.f, zero, 0.f);
+    CHECK(!fp.firedLive());                   // pump decayed: the fired colour is no longer spent
+    // Continuous behaviour unchanged when no pulses arrive:
+    CellPulse np;
+    for (int i = 0; i < 60; ++i) np.update(1.f / 30.f, loud, 0.9f);
+    CHECK(np.glow() > 0.5f && !np.firedLive());
+}
+{
+    using namespace tickerbar;
+    // PARENT-UNTOUCHED SCENARIO (DESIGN §10): two sync states + a
+    // shared block; join -> follower adopts -> follower diverges ->
+    // re-adopts; the parent's sync state AND its published packet
+    // in the block stay byte-identical throughout, and no adoption
+    // ever fires for the parent.
+    const long long now = 900000;
+    LinkShared sh;
+    auto& par = sh.slots[0]; par.appId = 0; par.linked = 1; par.heartbeatMs = now; par.linkSeq = 1;
+    par.bgSeq = 4; par.bgStyle = 2; par.bgOpacityPct = 60; par.bgEffect = 1;
+    par.bgTheme = 3; par.bgScheme = 1; par.bgPalHue = 0.1f; par.bgPalSat = 0.2f; par.bgPalSpread = 0.3f; par.bgPalCycle = 8.f;
+    auto& fol = sh.slots[1]; fol.appId = 1; fol.linked = 1; fol.heartbeatMs = now; fol.linkSeq = 2; fol.bgSeq = 2;
+    const LinkSlot parBefore = par;
+    BgSyncState syPar, syFol; BgPacket out;
+    // join: follower adopts the parent's nine-field packet
+    CHECK(bgAdoption(sh, 1, syFol, now, out));
+    CHECK(out.theme == 3 && out.scheme == 1 && out.palCycle == 8.f);
+    // parent side: adoption never fires, sync state untouched
+    CHECK(!bgAdoption(sh, 0, syPar, now, out));
+    CHECK(syPar.publishedStyle == -999 && syPar.publishedTheme == -1 && syPar.adoptedFrom == -1);
+    // follower-change: it publishes divergent values (as publishBg
+    // records them), then the standing parent packet re-adopts
+    syFol.publishedStyle = 0; syFol.publishedPct = 100; syFol.publishedEffect = 0;
+    syFol.publishedTheme = 5; syFol.publishedScheme = 4; syFol.publishedPalHue = 0.9f;
+    CHECK(bgAdoption(sh, 1, syFol, now, out));
+    CHECK(out.style == 2 && out.theme == 3 && out.palHue == 0.1f);
+    // parent's slot packet is byte-identical after the whole run
+    CHECK(par.bgSeq == parBefore.bgSeq && par.bgStyle == parBefore.bgStyle
+       && par.bgOpacityPct == parBefore.bgOpacityPct && par.bgEffect == parBefore.bgEffect
+       && par.bgTheme == parBefore.bgTheme && par.bgScheme == parBefore.bgScheme
+       && par.bgPalHue == parBefore.bgPalHue && par.bgPalCycle == parBefore.bgPalCycle);
+    CHECK(!bgAdoption(sh, 0, syPar, now, out)); // still nothing for the parent at the end
+}
+{
+    using namespace tickerbar;
+    // CrashWatch — ported MeterBar v0.28.3 cases (namespace change):
+    CrashTimeParts t; t.year = 2026; t.month = 11; t.day = 3; t.hour = 11; t.minute = 48; t.second = 6;
+    CHECK(crashFileStem(t) == "crash-2026-11-03_114806");
+    CHECK(crashTextName(t) == "crash-2026-11-03_114806.txt");
+    CHECK(crashDumpName(t) == "crash-2026-11-03_114806.dmp");
+    CrashTimeParts pad; pad.year = 2027; pad.month = 1; pad.day = 2; pad.hour = 3; pad.minute = 4; pad.second = 5;
+    CHECK(crashFileStem(pad) == "crash-2027-01-02_030405");
+    CHECK(isCrashTextName("crash-2026-11-03_114806.txt"));
+    CHECK(!isCrashTextName("crash-2026-11-03_114806.dmp"));
+    CHECK(!isCrashTextName("capture-log.txt"));
+    CHECK(!isCrashTextName("crash-2026-11-03_114806.txt.seen"));
+    CHECK(seenMarkerFor("crash-2026-11-03_114806.txt") == "crash-2026-11-03_114806.txt.seen");
+    CHECK(isSeenMarkerName("crash-2026-11-03_114806.txt.seen"));
+    CHECK(!isSeenMarkerName("notes.txt.seen"));
+    auto unseen = unseenCrashes({ "crash-2026-11-03_114806.txt",
+                                  "crash-2026-11-02_090000.txt", "crash-2026-11-02_090000.txt.seen",
+                                  "crash-2026-11-03_120000.txt",
+                                  "crash-2026-11-03_114806.dmp", "perf-auto.json" });
+    CHECK(unseen.size() == 2);
+    if (unseen.size() == 2) {
+        CHECK(unseen[0] == "crash-2026-11-03_114806.txt");
+        CHECK(unseen[1] == "crash-2026-11-03_120000.txt");
+    }
+    CHECK(unseenCrashes({}).empty());
+    CHECK(unseenCrashes({ "crash-2026-11-03_114806.txt", "crash-2026-11-03_114806.txt.seen" }).empty());
+    // FALLBACK HARVEST (route C): WER dump names + harvest decisions
+    CHECK(isCrashDumpName("TickerBar.exe.12345.dmp"));
+    CHECK(isCrashDumpName("TickerBar.exe.1.dmp"));
+    CHECK(!isCrashDumpName("TickerBar.exe.dmp"));          // no pid
+    CHECK(!isCrashDumpName("TickerBar.exe.12a45.dmp"));    // non-digit pid
+    CHECK(!isCrashDumpName("MeterBar.exe.12345.dmp"));     // another app's dump
+    CHECK(!isCrashDumpName("TickerBar.exe.12345.txt"));
+    CHECK(!isCrashDumpName("crash-2026-11-03_114806.dmp")); // our own handler's dump is not a harvest source
+    CHECK(shouldHarvestDump("TickerBar.exe.999.dmp", {}));
+    CHECK(!shouldHarvestDump("TickerBar.exe.999.dmp", { "TickerBar.exe.999.dmp" })); // already harvested
+    CHECK(!shouldHarvestDump("Other.exe.999.dmp", {}));
+    auto uhd = unseenHarvestedDumps({ "TickerBar.exe.111.dmp",
+                                      "TickerBar.exe.222.dmp", "TickerBar.exe.222.dmp.seen",
+                                      "crash-2026-11-03_114806.txt" });
+    CHECK(uhd.size() == 1);
+    if (uhd.size() == 1) CHECK(uhd[0] == "TickerBar.exe.111.dmp"); // dismiss-once per file
+    CHECK(unseenHarvestedDumps({}).empty());
+    auto rec = crashRecordText("0.6.13", "10.0 build 26200", "2026-11-03_114806", 0xC0000374ul,
+                               "0x00007fff00000000", "feed: live\n");
+    CHECK(rec.find("TickerBar crash record") != std::string::npos);
+    CHECK(rec.find("app version: 0.6.13") != std::string::npos);
+    CHECK(rec.find("windows: 10.0 build 26200") != std::string::npos);
+    CHECK(rec.find("exception: 0xc0000374") != std::string::npos);
+    CHECK(rec.find("feed: live") != std::string::npos);
+    auto recEmpty = crashRecordText("0.6.13", "10.0 build 26200", "2026-11-03_114806", 0ul, "0x0", "");
+    CHECK(recEmpty.find("(none recorded)") != std::string::npos);
+}
     std::printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

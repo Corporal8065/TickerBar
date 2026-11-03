@@ -33,5 +33,6 @@ target_link_libraries(TickerBar PRIVATE
 if(WIN32)
   # shell32 = SHAppBarMessage, comctl32 = SetWindowSubclass,
   # dwmapi = DWMWA_CLOAKED — all for ScreenSpace (AppBar/arrange).
-  target_link_libraries(TickerBar PRIVATE shell32 comctl32 dwmapi)
+  # dbghelp = MiniDumpWriteDump for the v0.6.13 crash record (CrashHandler.h).
+  target_link_libraries(TickerBar PRIVATE shell32 comctl32 dwmapi dbghelp)
 endif()

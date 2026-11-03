@@ -10,6 +10,8 @@
 #include <tickerbar/Glow.hpp>
 #include <tickerbar/Mascot.hpp>
 #include <tickerbar/Glyphs.hpp> // v0.6.2: icon glyphs as explicit UTF-8 bytes
+#include <tickerbar/CellPulse.hpp> // v0.6.13: linked-audio cell envelope, ported from SessionBar v0.4.16 + BLK7 fire()
+#include <tickerbar/CrashWatch.hpp> // v0.6.13: crash-record naming/notice logic (family crash-log round)
 #include "TickerBarVersion.h" // v0.5.3: generated — single-source version
 #include <map>
 #include <memory>
@@ -185,6 +187,17 @@ public:
     void doArrange();
     void doRestore();
     void doStackAll();                  // v0.3.0 item 12: one-click stack of the linked family
+    void doLinkAll(int edgeOrdinal);    // v0.6.13 (DESIGN §6): one click links all three bars, MeterBar parent, stacked at Top (0) / Bottom (1)
+    void openLogFolder();               // v0.6.13: Documents\\TickerBar (crash records) in Explorer — menu + Settings About
+    // v0.6.13: the cells' linked-pulse envelope (DESIGN §7) — driven
+    // ONLY from MeterBar's real link packet (audio envelope + BLK7
+    // pulse events), through core CellPulse. Zero when unlinked.
+    float cellGlow() const { return cellPulse_.glow(); }
+    float cellPulseSpend() const { return cellPulse_.firedLive() ? cellPulse_.pump() : cellPulse_.glow(); }
+    juce::Colour cellPulseColour() const {
+        if (cellPulse_.firedLive()) return juce::Colour((juce::uint32)(cellPulse_.firedColour() & 0xFFFFFF) | 0xff000000u);
+        return theme_.accent.brighter(0.35f);
+    }
     void checkForUpdates();             // v0.3.0 item 1: manual update check (Settings > About)
     juce::Colour gainColour(bool up) const; // v0.3.0 item 6: data colour-scheme pair
     juce::Colour dataRgb(const tickerbar::Rgb& c) const { return juce::Colour((juce::uint8)c.r, (juce::uint8)c.g, (juce::uint8)c.b); }
@@ -270,6 +283,21 @@ private:
     juce::int64 titleLastTickMs_ = 0;
     std::unique_ptr<MascotView> mascot_;
     BarLinkClient linkClient_{ tickerbar::kLinkAppTicker }; // v0.2.0 (k)
+    // v0.6.13 (DESIGN §6d): pre-link appearance snapshot, taken on
+    // the link OFF->ON edge (any cause) BEFORE the first adoption
+    // can land, restored on the ON->OFF edge through the normal
+    // settings-changed path. In-memory only (no new settings keys):
+    // a follower that crashes mid-link keeps the adopted values.
+    struct LinkAppearanceSnapshot {
+        bool held = false;
+        int backgroundStyle = 0; float backgroundOpacity = 1.0f;
+        int bgEffect = 0, vizStyle = 0;
+        std::string themeName; int dataColorScheme = 0;
+        float vizHue = 0.f, vizSat = 0.f, vizSpread = 0.f, vizCycle = 0.f;
+    };
+    LinkAppearanceSnapshot linkSnap_;
+    juce::Rectangle<int> linkAllRect_; // v0.6.13 (DESIGN §6d): pre-Link-All window rect
+    bool linkAllRectHeld_ = false;
     ScreenSpace screenSpace_;
     tickerbar::ReserveMachine reserveMachine_;
     ToastNotifier toastNotifier_;
@@ -334,6 +362,9 @@ private:
     tickerbar::VisualizerLines vizLines_; // v0.5.8: the Lines style's ribbon model (pure core)
     tickerbar::VisualizerField vizField_; // v0.6.5: the Field style's vortex model (pure core)
     tickerbar::GlowField glow_;
+    tickerbar::CellPulse cellPulse_; // v0.6.13: linked-audio/pulse cell envelope (DESIGN §7)
+    bool cellPulseWasLit_ = false;   // v0.6.13: repaint cells while the envelope is up (and once as it dies)
+    unsigned seenPulseSeq_ = 0;      // v0.6.13: last BLK7 pulse seq consumed from MeterBar's slot
     tickerbar::MascotAnim mascotAnim_;
     juce::Image vizCache_, vizBlur_, glowCache_;
     juce::Image vizBlurSrc_;                 // v0.6.4: quarter-res downsample the blur convolves (lag fix — MeterBar v0.23.1 twin)
