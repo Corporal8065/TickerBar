@@ -56,13 +56,17 @@ public:
     }
 };
 
-// v0.6.8: button text with the TEXT POP (TextPop.h, corrected
-// geometry). Stock V4 in every respect except drawButtonText,
-// which mirrors LookAndFeel_V2's geometry and routes the text
-// through textpop::drawFitted. Applied ONLY to the text Update!
-// button — the icon cluster's GLYPH buttons keep the stock
-// single draw above (Jackson: emoji text was good as it was,
-// it must not be doubled).
+// v0.6.8: the Update! button's text went through the TEXT POP
+// (TextPop.h) while the cells still doubled. v0.6.10 took the
+// cells single-draw; v0.6.15 (Jackson's word) takes the button
+// single too: stock V4 in every respect except drawButtonText,
+// which mirrors LookAndFeel_V2's geometry and draws the label
+// ONCE, in the button's own colour, through textpop::drawSingle —
+// the same treatment as the cells. Applied ONLY to the text
+// Update! button — the icon cluster's GLYPH buttons keep the
+// stock single draw above (Jackson: emoji text was good as it
+// was, it must not be doubled), and the toolbar LABELS keep
+// their pop (PoppedLabelLookAndFeel below).
 class PoppedButtonLookAndFeel : public juce::LookAndFeel_V4 {
 public:
     void drawButtonText(juce::Graphics& g, juce::TextButton& button,
@@ -79,9 +83,9 @@ public:
         const int rightIndent = juce::jmin(fontHeight, 2 + cornerSize / (button.isConnectedOnRight() ? 4 : 2));
         const int textWidth = button.getWidth() - leftIndent - rightIndent;
         if (textWidth > 0)
-            textpop::drawFitted(g, button.getButtonText(),
+            textpop::drawSingle(g, button.getButtonText(),
                                 juce::Rectangle<int>(leftIndent, yIndent, textWidth, button.getHeight() - yIndent * 2),
-                                juce::Justification::centred, 2, 1.0f, colour);
+                                juce::Justification::centred, colour);
     }
 };
 
@@ -167,6 +171,9 @@ public:
     void splitterDragBegin();
     void splitterDragEnd();
     void openDetail(const juce::String& symbol);
+    SectionClient& sectionClient() { return sectionClient_; } // v0.6.15: the drill-in popup's feed
+    void openSectionDetail(QuoteCell* cell);                  // v0.6.15: a section cell's drill-in popup
+    void customStocksChanged();                               // v0.6.15: Settings edited the Stocks tickers
     tickerbar::AlertLevels levelsFor(const std::string& symbol) const;
     void setAlerts(const std::string& symbol, double above, double below);
     void settingsChanged(bool watchlistToo); // apply + persist; watchlistToo also rebuilds cells and the client list
@@ -266,10 +273,12 @@ private:
     // v0.6.11: Fear & Greed + BTC dominance live HERE now — one
     // small rotating cell in the title bar (see TitleContextCell).
     std::unique_ptr<TitleContextCell> titleCtx_;
-    // v0.6.14: the rotation-section selector at the left end of the
-    // main strip (see ModeSelector) — the third surface over the
-    // same persisted rotationSection field (Settings combo + Menu
-    // submenu are the other two). resized() owns its form/placement.
+    // v0.6.14: the rotation-section selector on the bar (see
+    // ModeSelector) — the third surface over the same persisted
+    // rotationSection field (Settings combo + Menu submenu are the
+    // other two). v0.6.15: a VERTICAL RAIL on the bar's left side
+    // (Jackson's field verdict on the v0.6.14 horizontal row);
+    // resized() owns its form/placement per core's rail rules.
     std::unique_ptr<ModeSelector> modeSel_;
     // v0.6.11: the current section's quote cells + their defs
     // (empty in the Crypto section, where cells_ rules).
@@ -322,7 +331,7 @@ private:
     std::unique_ptr<TickerSettingsWindow> settingsWin_;
 
     PoppedLabelLookAndFeel popLabelLnf_;   // v0.6.8: text pop for the toolbar labels — declared before them so it outlives them
-    PoppedButtonLookAndFeel popButtonLnf_; // v0.6.8: text pop for the Update! text button only — declared before the buttons so it outlives them
+    PoppedButtonLookAndFeel popButtonLnf_; // the Update! text button's single-draw LNF (v0.6.15; the class keeps its v0.6.8 name) — declared before the buttons so it outlives them
     juce::Label wordmark_, versionLabel_, statusLabel_;
     IconButtonLookAndFeel iconLnf_; // v0.6.1: declared before the buttons so it outlives them
     // v0.6.0: icon-only cluster (see the class comment). The

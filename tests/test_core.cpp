@@ -1109,7 +1109,14 @@ int main() {
         CHECK(!marqueeNeeded(three, 16, 512));
         CHECK(!marqueeNeeded({}, 16, 10));
         const int cyc = marqueeCycle(three, 16);
-        CHECK(cyc == 512 + kMarqueeLoopGapPx);
+        // v0.6.15: the loop gap IS the ordinary inter-cell gap —
+        // the wrap spacing is indistinguishable from cell spacing
+        // (Jackson's screenshot ask; it was a 56 px blank run).
+        CHECK(cyc == 512 + 16);
+        CHECK(marqueeCycle(three, 8) == 504);  // 480 + 2x8 between + 8 loop: the gap parameter rules, not a constant
+        // v0.6.15: the strip speed — 45 px/s (v0.4.0) raised 10%.
+        CHECK(near(kMarqueeSpeedPxPerSec, 49.5, 1e-9));
+        CHECK(near(kMarqueeSpeedPxPerSec, 45.0 * 1.10, 1e-9));
         // un-scrolled bases
         CHECK(marqueePosition(0, 160, 0, cyc) == 0);
         CHECK(marqueePosition(176, 160, 0, cyc) == 176);
@@ -1478,24 +1485,37 @@ int main() {
         auto mixed = parseCnbcQuotes(R"({"FormattedQuoteResult":{"FormattedQuote":[{"symbol":"ZZZ","code":1},{"symbol":"SPY","code":0,"last":"10.5","previous_day_closing":"10"}]}})");
         CHECK(mixed && mixed->size() == 1 && (*mixed)[0].symbol == "SPY");
 
-        // FRED CSV: the real DGS10 window (header + 45 observations).
-        auto fred = parseFredGraphCsv(readFile("fred_dgs10.csv"));
-        CHECK(fred.has_value());
-                CHECK(fred && fred->size() == 43);  // 45 rows minus 2 holiday gaps (empty value)
-        CHECK(fred && fred->back().date == "2026-10-30" && near(fred->back().value, 4.94));
-        auto yr = yieldReadingFrom(*fred);
-        CHECK(near(yr.valuePct, 4.94) && near(yr.prevPct, 4.98) && yr.date == "2026-10-30");
-        CHECK(yr.history.size() == 43);
-        // "." gap rows are the source's own mark: skipped, not fatal.
-        auto gaps = parseFredGraphCsv("observation_date,DGS10\n2026-10-28,4.90\n2026-10-29,.\n2026-10-30,4.94\n");
-        CHECK(gaps && gaps->size() == 2);
-        CHECK(!parseFredGraphCsv("").has_value());
-        CHECK(!parseFredGraphCsv("2026-10-30,4.94\n").has_value());          // no header
-        CHECK(!parseFredGraphCsv("observation_date,DGS10\n2026-10-30,abc\n").has_value());
-        CHECK(!parseFredGraphCsv("observation_date,DGS10\n30-10-2026,4.94\n").has_value());
-        CHECK(fredDateShape("2026-10-30"));
-        CHECK(!fredDateShape("2026-1-3"));
-        CHECK(!fredDateShape("abcd-ef-gh"));
+        // Yields via the CNBC batch (v0.6.15 — the FRED route was
+        // removed; see Sections.hpp). Fixture: the REAL response
+        // captured 2026-11-03 asking for the dotted AND undotted
+        // forms — the dotted rows answer code 1 (unknown, skipped),
+        // the undotted rows carry the live yields.
+        auto yb = parseCnbcQuotes(readFile("cnbc_yields_batch.json"));
+        CHECK(yb.has_value());
+        CHECK(yb && yb->size() == 5);
+        {
+            const CnbcQuote* ten = nullptr;
+            for (const auto& q : *yb) if (q.symbol == "US10Y") ten = &q;
+            CHECK(ten != nullptr);
+            CHECK(ten && near(ten->last, 4.904) && near(ten->prevClose, 4.95));
+            CHECK(ten && ten->lastTimedate == "8:53 PM EST");
+            auto yr = yieldReadingFromCnbc(*ten);
+            CHECK(near(yr.valuePct, 4.904) && near(yr.prevPct, 4.95));
+            CHECK(yr.stamp == "8:53 PM EST");  // the quote's own time — never a fake observation date
+        }
+        // The yield table + batch ids are the verified undotted forms.
+        CHECK(treasuryYieldSeries().size() == 5);
+        CHECK(std::string(treasuryYieldSeries()[0].cnbc) == "US3M");
+        CHECK(std::string(treasuryYieldSeries()[3].cnbc) == "US10Y");
+        CHECK(std::string(treasuryYieldSeries()[3].display) == "10Y");
+        CHECK(cnbcYieldBatchIds() == std::vector<std::string>({ "US3M", "US2Y", "US5Y", "US10Y", "US30Y" }));
+        {
+            // The Bonds cells carry the CNBC yield ids on Yield defs.
+            auto bonds = sectionCells(3);
+            CHECK(bonds[0].kind == SectionCellKind::Yield && bonds[0].cnbc == "US3M" && bonds[0].display == "3M");
+            CHECK(bonds[3].kind == SectionCellKind::Yield && bonds[3].cnbc == "US10Y");
+            CHECK(bonds[5].kind == SectionCellKind::Quote && bonds[5].display == "TLT");
+        }
 
         // Yahoo daily closes: the real SPY month (22 sessions).
         auto closes = parseYahooDailyCloses(readFile("yahoo_chart_spy.json"));
@@ -1554,12 +1574,13 @@ int main() {
         CHECK(cnbcMainBatchIds().size() == 18);
         CHECK(cnbcTop100BatchIds(0).size() == 50 && cnbcTop100BatchIds(1).size() == 50);
         CHECK(cnbcBatchUrl({ "SPY", ".SPX" }).find("symbols=SPY%7C.SPX&") != std::string::npos);
-        CHECK(fredCsvUrl("DGS10", "2025-11-03") == "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10&cosd=2025-11-03");
         CHECK(yahooChartUrl("^VIX").find("%5EVIX") != std::string::npos);
-        // Staleness budgets stay 3x the poll clocks.
+        // Staleness budgets stay 3x the poll clocks — the yields'
+        // included, on their REAL (CNBC, 1-minute) cadence.
         CHECK(near(kSectionStaleSec, 3.0 * kCnbcMainPollSec));
         CHECK(near(kTop100StaleSec, 3.0 * kCnbcTop100PollSec));
-        CHECK(near(kFredStaleSec, 3.0 * kFredPollSec));
+        CHECK(near(kCnbcYieldPollSec, 60.0));
+        CHECK(near(kYieldStaleSec, 3.0 * kCnbcYieldPollSec));
 
         // Title-bar rotator room rule: hides rather than crushing.
         CHECK(titleContextExtent(0) == 0);
@@ -1632,6 +1653,15 @@ int main() {
             resetAllSettingsToDefaults(s);
             CHECK(s.rotationSection == 0);
         }
+        {
+            // v0.6.15: the custom tickers are an appended field —
+            // default empty, and the factory reset clears them.
+            TickerState s;
+            CHECK(s.customStocks.empty());
+            s.customStocks = { "PLTR" };
+            resetAllSettingsToDefaults(s);
+            CHECK(s.customStocks.empty());
+        }
 
         // v0.6.14: the on-bar mode selector. Short labels ride the
         // SAME indices as the full names (one persisted field, three
@@ -1644,54 +1674,173 @@ int main() {
         CHECK(std::string(rotationSectionShortName(5)).empty());
         for (int i = 0; i < kRotationSectionCount; ++i)
             CHECK(!std::string(rotationSectionShortName(i)).empty());
-        // Width arithmetic over measured labels.
+        // v0.6.15: the selector is a VERTICAL RAIL (Jackson's field
+        // verdict on the v0.6.14 horizontal row) — five stacked rows
+        // at the minimum legible height, as wide as its longest label.
+        CHECK(modeRailNaturalHeight(5) == 5 * kModeRailSegMinPx);
+        CHECK(modeRailNaturalHeight(5) == 75);
+        CHECK(modeRailNaturalHeight(0) == 0);
+        CHECK(modeRailWidth(58) == 58 + 2 * kModeSelectorSegPadPx);
+        CHECK(modeRailWidth(-3) == 2 * kModeSelectorSegPadPx); // negatives clamp
+        CHECK(modeSelectorCollapsedWidth(44) == 44 + 2 * kModeSelectorSegPadPx + kModeSelectorChevronPx);
+        CHECK(modeSelectorCollapsedWidth(0) == 2 * kModeSelectorSegPadPx + kModeSelectorChevronPx);
+        // Horizontal room rule: the rail expands iff the bar's
+        // content height fits its natural height — its width is
+        // never the constraint.
+        CHECK(modeRailFits(75, 75));
+        CHECK(!modeRailFits(74, 75));
+        CHECK(!modeRailFits(500, 0));
+        // The collapsed fallback keeps v0.6.14's strip-remainder gate.
         {
-            const std::vector<int> lw = { 30, 40, 32, 30, 44 };
-            CHECK(modeSelectorNaturalWidth(lw) == 176 + 5 * 2 * kModeSelectorSegPadPx);
-            CHECK(modeSelectorNaturalWidth({}) == 0);
-            CHECK(modeSelectorNaturalWidth({ -5, 10 }) == 10 + 2 * 2 * kModeSelectorSegPadPx); // negatives clamp
-            CHECK(modeSelectorCollapsedWidth(44) == 44 + 2 * kModeSelectorSegPadPx + kModeSelectorChevronPx);
-            CHECK(modeSelectorCollapsedWidth(0) == 2 * kModeSelectorSegPadPx + kModeSelectorChevronPx);
+            const int col = 70;
+            CHECK(modeSelectorFallbackForm(col + kModeSelectorKeepMinPx, col) == ModeSelectorForm::Collapsed);
+            CHECK(modeSelectorFallbackForm(col + kModeSelectorKeepMinPx - 1, col) == ModeSelectorForm::Hidden);
+            CHECK(modeSelectorFallbackForm(0, col) == ModeSelectorForm::Hidden);
+            CHECK(modeSelectorExtent(ModeSelectorForm::Collapsed, 0, col) == col);
+            CHECK(modeSelectorExtent(ModeSelectorForm::Hidden, 0, col) == 0);
         }
-        // Horizontal room rule: expanded only while the strip keeps
-        // its working remainder, collapsed while it keeps the
-        // minimum, hidden below that — it never crushes the strip.
+        // Vertical-bar rule: the rail expands iff it fits AND leaves
+        // the cells their minimum row (kModeRailKeepVPx).
         {
-            const int nat = 246, col = 70;
-            CHECK(modeSelectorFormH(nat + kModeSelectorKeepPx, nat, col) == ModeSelectorForm::Expanded);
-            CHECK(modeSelectorFormH(nat + kModeSelectorKeepPx - 1, nat, col) == ModeSelectorForm::Collapsed);
-            CHECK(modeSelectorFormH(col + kModeSelectorKeepMinPx, nat, col) == ModeSelectorForm::Collapsed);
-            CHECK(modeSelectorFormH(col + kModeSelectorKeepMinPx - 1, nat, col) == ModeSelectorForm::Hidden);
-            CHECK(modeSelectorFormH(0, nat, col) == ModeSelectorForm::Hidden);
-            CHECK(modeSelectorExtent(ModeSelectorForm::Expanded, nat, col) == nat);
-            CHECK(modeSelectorExtent(ModeSelectorForm::Collapsed, nat, col) == col);
-            CHECK(modeSelectorExtent(ModeSelectorForm::Hidden, nat, col) == 0);
+            const int natH = modeRailNaturalHeight(5);
+            CHECK(modeRailFormV(natH + kModeRailKeepVPx, natH) == ModeSelectorForm::Expanded);
+            CHECK(modeRailFormV(natH + kModeRailKeepVPx - 1, natH) == ModeSelectorForm::Collapsed);
+            CHECK(modeRailFormV(0, natH) == ModeSelectorForm::Collapsed);
         }
-        // Vertical room rule: the selector is its own row, so the
-        // gate is the row's own width.
+        // Rail segment geometry: equal division of the granted
+        // height; boundary pixels land in the right segment.
         {
-            const int nat = 246, col = 70;
-            CHECK(modeSelectorFormV(nat, nat, col) == ModeSelectorForm::Expanded);
-            CHECK(modeSelectorFormV(nat - 1, nat, col) == ModeSelectorForm::Collapsed);
-            CHECK(modeSelectorFormV(col, nat, col) == ModeSelectorForm::Collapsed);
-            CHECK(modeSelectorFormV(col - 1, nat, col) == ModeSelectorForm::Hidden);
-            CHECK(modeSelectorFormV(0, nat, col) == ModeSelectorForm::Hidden);
-        }
-        // Segment geometry: equal division of the granted extent;
-        // boundary pixels land in the right segment; outside is none.
-        {
-            CHECK(modeSegmentAt(0, 250, 5) == 0);
-            CHECK(modeSegmentAt(49, 250, 5) == 0);
-            CHECK(modeSegmentAt(50, 250, 5) == 1);
-            CHECK(modeSegmentAt(249, 250, 5) == 4);
-            CHECK(modeSegmentAt(250, 250, 5) == -1);
-            CHECK(modeSegmentAt(-1, 250, 5) == -1);
-            CHECK(modeSegmentAt(10, 0, 5) == -1);
-            CHECK(modeSegmentAt(10, 250, 0) == -1);
-            CHECK(modeSegmentX0(2, 250, 5) == 100 && modeSegmentX1(2, 250, 5) == 150);
-            CHECK(modeSegmentX0(0, 250, 5) == 0 && modeSegmentX1(4, 250, 5) == 250);
+            CHECK(modeSegmentAtY(0, 250, 5) == 0);
+            CHECK(modeSegmentAtY(49, 250, 5) == 0);
+            CHECK(modeSegmentAtY(50, 250, 5) == 1);
+            CHECK(modeSegmentAtY(249, 250, 5) == 4);
+            CHECK(modeSegmentAtY(250, 250, 5) == -1);
+            CHECK(modeSegmentAtY(-1, 250, 5) == -1);
+            CHECK(modeSegmentAtY(10, 0, 5) == -1);
+            CHECK(modeSegmentAtY(10, 250, 0) == -1);
+            CHECK(modeSegmentY0(2, 250, 5) == 100 && modeSegmentY1(2, 250, 5) == 150);
+            CHECK(modeSegmentY0(0, 250, 5) == 0 && modeSegmentY1(4, 250, 5) == 250);
             for (int i = 0; i < 5; ++i)
-                CHECK(modeSegmentAt((modeSegmentX0(i, 251, 5) + modeSegmentX1(i, 251, 5)) / 2, 251, 5) == i);
+                CHECK(modeSegmentAtY((modeSegmentY0(i, 251, 5) + modeSegmentY1(i, 251, 5)) / 2, 251, 5) == i);
+        }
+    }
+
+    // ================= v0.6.15: section drill-in + your tickers + display rules =================
+    // Fixtures: yahoo_ohlcv_spy_1d.json / yahoo_ohlcv_vix_1d.json /
+    // yahoo_ohlcv_tlt_1mo.json are REAL v8 chart payloads captured
+    // 2026-11-03 from query1.finance.yahoo.com (SPY 1d/5m, ^VIX
+    // 1d/5m, TLT 1mo/1d). The rest are hand-broken variants.
+    {
+        // The parser: full OHLCV, timestamps to ms, in order.
+        auto spy = parseYahooCandles(readFile("yahoo_ohlcv_spy_1d.json"));
+        CHECK(spy.has_value());
+        CHECK(spy && spy->size() == 79);
+        CHECK(spy && spy->front().tOpenMs == 1793716200000LL);
+        CHECK(spy && near(spy->front().close, 753.5050048828125, 1e-6));
+        CHECK(spy && candleRange(*spy) && candleRange(*spy)->hasVolume);
+        // ^VIX: real candles, volume all zero — hasVolume must say so
+        // (the chart prints "no volume from this feed", honestly).
+        auto vix = parseYahooCandles(readFile("yahoo_ohlcv_vix_1d.json"));
+        CHECK(vix && vix->size() == 157);
+        CHECK(vix && candleRange(*vix) && !candleRange(*vix)->hasVolume);
+        // TLT: one bar carries a null close (Yahoo's no-trade mark)
+        // — the bar is skipped, the series survives.
+        auto tlt = parseYahooCandles(readFile("yahoo_ohlcv_tlt_1mo.json"));
+        CHECK(tlt && tlt->size() == 21);
+        CHECK(tlt && near(tlt->front().close, 77.11000061035156, 1e-6));
+        // Failure shapes: the bogus-symbol error body, garbage, a
+        // string where a number sits, a non-positive close, reversed
+        // timestamps, a single surviving bar.
+        CHECK(!parseYahooCandles(R"({"chart":{"result":null,"error":{"code":"Not Found","description":"No data found"}}})").has_value());
+        CHECK(!parseYahooCandles("not json").has_value());
+        CHECK(!parseYahooCandles(R"({"chart":{"result":[{"timestamp":[1000,2000],"indicators":{"quote":[{"open":[10,"soon"],"high":[10,11],"low":[9,10],"close":[10,10.5],"volume":[5,5]}]}}],"error":null}})").has_value());
+        CHECK(!parseYahooCandles(R"({"chart":{"result":[{"timestamp":[1000,2000],"indicators":{"quote":[{"open":[10,10],"high":[10,11],"low":[9,10],"close":[10,-1],"volume":[5,5]}]}}],"error":null}})").has_value());
+        CHECK(!parseYahooCandles(R"({"chart":{"result":[{"timestamp":[2000,1000],"indicators":{"quote":[{"open":[10,10],"high":[10,11],"low":[9,10],"close":[10,10.5],"volume":[5,5]}]}}],"error":null}})").has_value());
+        CHECK(!parseYahooCandles(R"({"chart":{"result":[{"timestamp":[1000,2000],"indicators":{"quote":[{"open":[10,null],"high":[10,null],"low":[9,null],"close":[10,null],"volume":[5,5]}]}}],"error":null}})").has_value());
+        // A null volume reads as 0, never as a failure.
+        auto nullVol = parseYahooCandles(R"({"chart":{"result":[{"timestamp":[1000,2000],"indicators":{"quote":[{"open":[10,10],"high":[10,11],"low":[9,10],"close":[10,10.5],"volume":[null,5]}]}}],"error":null}})");
+        CHECK(nullVol && nullVol->size() == 2 && (*nullVol)[0].volume == 0.0);
+        // URL shapes per range (7d verified live on query1).
+        CHECK(yahooDetailChartUrl("SPY", DetailRange::H24) ==
+              "https://query1.finance.yahoo.com/v8/finance/chart/SPY?range=1d&interval=5m");
+        CHECK(yahooDetailChartUrl("^GSPC", DetailRange::D7) ==
+              "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=7d&interval=30m");
+        CHECK(yahooDetailChartUrl("BRK-B", DetailRange::D30) ==
+              "https://query1.finance.yahoo.com/v8/finance/chart/BRK-B?range=1mo&interval=1d");
+        CHECK(yahooDetailNote(DetailRange::H24).find("5m") != std::string::npos);
+        CHECK(yahooDetailNote(DetailRange::D30).find("daily") != std::string::npos);
+
+        // Drill-in routing: the index->Yahoo map rides the section
+        // tables; yields + computed Internals never chart; the
+        // Internals VIX drills in on the same ^VIX as the Indexes one.
+        {
+            auto idx = sectionCells(1);
+            CHECK(drillInYahooSymbol(idx[0]) == "^GSPC");   // SPX
+            CHECK(drillInYahooSymbol(idx[4]) == "^VIX");    // VIX (Indexes)
+            CHECK(drillInYahooSymbol(idx[5]) == "SPY");
+            auto bonds = sectionCells(3);
+            CHECK(drillInYahooSymbol(bonds[0]).empty());    // 3M yield: no chart
+            CHECK(drillInYahooSymbol(bonds[5]) == "TLT");   // bond ETF: chart
+            auto internals = sectionCells(4);
+            CHECK(drillInYahooSymbol(internals[0]) == "^VIX");
+            CHECK(drillInYahooSymbol(internals[1]).empty()); // ADVANCERS: computed, no chart
+            auto top = sectionCells(2);
+            bool brkOk = false;
+            for (const auto& d : top) if (d.display == "BRK.B") brkOk = drillInYahooSymbol(d) == "BRK-B";
+            CHECK(brkOk);
+        }
+
+        // The title rotator is crypto context (v0.6.15): visible
+        // only in Crypto, and only with at least one face enabled.
+        CHECK(titleContextWanted(0, true, false));
+        CHECK(titleContextWanted(0, false, true));
+        CHECK(!titleContextWanted(0, false, false));
+        for (int s = 1; s < kRotationSectionCount; ++s)
+            CHECK(!titleContextWanted(s, true, true));
+
+        // Bonds movement (v0.6.15): Bonds alone is marquee-forced;
+        // every other section scrolls on overflow only.
+        CHECK(sectionMarqueeForced((int)RotationSection::Bonds));
+        CHECK(!sectionMarqueeForced((int)RotationSection::Crypto));
+        CHECK(!sectionMarqueeForced((int)RotationSection::EtfsIndexes));
+        CHECK(!sectionMarqueeForced((int)RotationSection::Top100));
+        CHECK(!sectionMarqueeForced((int)RotationSection::Internals));
+
+        // Your tickers: normalization first.
+        CHECK(normalizeStockTicker("pltr") == "PLTR");
+        CHECK(normalizeStockTicker(" brk.b ") == "BRK.B");
+        CHECK(normalizeStockTicker("BRK/B").empty());   // not a CNBC symbol shape
+        CHECK(normalizeStockTicker("").empty());
+        CHECK(normalizeStockTicker(".A").empty());
+        CHECK(normalizeStockTicker("TOOLONGSYMBOL1").empty());  // > 12 chars
+        CHECK(normalizeStockTicker("A").size() == 1);
+        // Cleaning: normalize, dedupe (first wins), drop junk, cap.
+        CHECK(cleanCustomStocks({ "pltr", "PLTR", "!!", "hood" }) ==
+              std::vector<std::string>({ "PLTR", "HOOD" }));
+        CHECK(cleanCustomStocks({}).empty());
+        {
+            std::vector<std::string> many;
+            for (int i = 0; i < 60; ++i) many.push_back("S" + std::to_string(i));
+            CHECK(cleanCustomStocks(many).size() == kMaxCustomStocks);
+        }
+        // Ordering: his tickers lead; a Top-100 name he also lists
+        // shows ONCE, in his lead position; the rest of the 100 follows.
+        {
+            auto cells = stocksSectionCells({ "PLTR", "NVDA" });
+            CHECK(cells.size() == 100);  // both are Top 100 members: they MOVE to the lead, nothing duplicates
+            CHECK(cells[0].display == "PLTR" && cells[1].display == "NVDA");
+            int nvdaCount = 0;
+            for (const auto& c : cells) if (c.display == "NVDA") ++nvdaCount;
+            CHECK(nvdaCount == 1);
+            CHECK(cells[2].display == "AAPL");  // the Top 100 resumes in table order
+            CHECK(cells[0].cnbc == "PLTR" && cells[0].yahoo == "PLTR");
+            auto outside = stocksSectionCells({ "HOOD" });  // not a Top 100 member
+            CHECK(outside.size() == 101);
+            CHECK(outside[0].display == "HOOD" && outside[1].display == "NVDA");
+            CHECK(stocksSectionCells({}).size() == 100);
+            CHECK(stocksSectionCells({})[0].display == sectionCells(2)[0].display);
+            CHECK(cnbcCustomBatchIds({ "pltr", "hood", "PLTR" }) ==
+                  std::vector<std::string>({ "PLTR", "HOOD" }));
         }
     }
 

@@ -1,6 +1,9 @@
-// TickerBar core: parsers for the v0.6.11 rotation-section sources
-// (CNBC batch quotes, FRED CSV, Yahoo daily closes) and the Market
-// Internals computed-proxy math.
+// TickerBar core: parsers for the rotation-section sources (CNBC
+// batch quotes — sections, bond ETFs and, since v0.6.15, the
+// Treasury yields too; Yahoo daily closes and OHLCV drill-in
+// candles) and the Market Internals computed-proxy math. The
+// FRED CSV parser that served yields in v0.6.11 was removed with
+// its route in v0.6.15 (see Sections.hpp for the stall evidence).
 //
 // STRICTNESS (the family rule, same as MarketParse/ContextParse): a
 // payload that does not parse cleanly is a FAILED fetch — nullopt,
@@ -37,6 +40,7 @@ struct CnbcQuote {
     double last = 0.0;
     double prevClose = 0.0; // 0 = source did not say
     double open = 0.0, high = 0.0, low = 0.0;
+    std::string lastTimedate; // the quote's own timestamp ("8:53 PM EST"); "" when not carried
 };
 
 namespace detail {
@@ -107,6 +111,10 @@ inline std::optional<std::vector<CnbcQuote>> parseCnbcQuotes(const std::string& 
         q.symbol = *sym;
         q.last = *last;
         if (auto nm = row->find("name") ? row->find("name")->asString() : std::nullopt) q.name = *nm;
+        // Lenient like `name`: a display string, not a number — a
+        // missing/odd timestamp degrades the stamp, never the quote.
+        if (auto td = row->find("last_timedate") ? row->find("last_timedate")->asString() : std::nullopt)
+            q.lastTimedate = *td;
         // Optional fields: absent = 0 (unknown); present-but-broken = poison.
         struct OptField { const char* key; double* dst; };
         const OptField optFields[] = {
@@ -134,72 +142,18 @@ inline SectionQuote sectionQuoteFrom(const CnbcQuote& q) {
     return s;
 }
 
-// ---- FRED fredgraph CSV ----------------------------------------------
-struct FredPoint {
-    std::string date;  // YYYY-MM-DD
-    double value = 0.0;
-};
-
-inline bool fredDateShape(const std::string& s) {
-    if (s.size() != 10 || s[4] != '-' || s[7] != '-') return false;
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (i == 4 || i == 7) continue;
-        if (s[i] < '0' || s[i] > '9') return false;
-    }
-    return true;
-}
-
-// Header line first ("observation_date,DGS10"), then one row per
-// observation. FRED marks missing observations with "." — those rows
-// are skipped (the source's own gap convention, e.g. holidays inside
-// the window), anything else malformed poisons the whole series.
-inline std::optional<std::vector<FredPoint>> parseFredGraphCsv(const std::string& body) {
-    std::vector<std::string> lines;
-    std::string cur;
-    for (char c : body) {
-        if (c == '\n') { lines.push_back(cur); cur.clear(); }
-        else if (c != '\r') cur += c;
-    }
-    if (!cur.empty()) lines.push_back(cur);
-    size_t li = 0;
-    while (li < lines.size() && detail::trimAscii(lines[li]).empty()) ++li;
-    if (li >= lines.size()) return std::nullopt;
-    // Header: must contain a comma and must NOT itself be a data row.
-    const std::string& header = lines[li++];
-    const size_t hComma = header.find(',');
-    if (hComma == std::string::npos) return std::nullopt;
-    if (fredDateShape(detail::trimAscii(header.substr(0, hComma)))) return std::nullopt;
-    std::vector<FredPoint> out;
-    for (; li < lines.size(); ++li) {
-        const std::string line = detail::trimAscii(lines[li]);
-        if (line.empty()) continue;
-        const size_t comma = line.find(',');
-        if (comma == std::string::npos) return std::nullopt;
-        const std::string date = detail::trimAscii(line.substr(0, comma));
-        const std::string valStr = detail::trimAscii(line.substr(comma + 1));
-        if (!fredDateShape(date)) return std::nullopt;
-        if (valStr.empty() || valStr == ".") continue;  // FRED's gap marks
-        auto v = detail::strictDecimal(valStr);
-        if (!v) return std::nullopt;
-        out.push_back({ date, *v });
-    }
-    if (out.empty()) return std::nullopt;
-    return out;
-}
-
-// The reading a Bonds cell shows: latest observation, the previous
-// one (for the bp change), and up to `historyPoints` of history for
-// the sparkline.
-inline YieldReading yieldReadingFrom(const std::vector<FredPoint>& points,
-                                     size_t historyPoints = 90) {
+// ---- Treasury yields from the CNBC batch (v0.6.15) --------------------
+// A yield row is an ordinary CnbcQuote whose `last`/`prevClose` are
+// yields in percent ("4.904%" / "4.95%" — cnbcNumber strips the %).
+// The reading the Bonds cell shows: the live yield, the previous
+// close (for the bp change), and the quote's own timestamp as the
+// stamp. CNBC carries NO observation date for these — none is
+// invented (see Model.hpp's YieldReading note).
+inline YieldReading yieldReadingFromCnbc(const CnbcQuote& q) {
     YieldReading r;
-    if (points.empty()) return r;
-    const FredPoint& lastP = points.back();
-    r.valuePct = lastP.value;
-    r.date = lastP.date;
-    if (points.size() >= 2) r.prevPct = points[points.size() - 2].value;
-    const size_t begin = points.size() > historyPoints ? points.size() - historyPoints : 0;
-    for (size_t i = begin; i < points.size(); ++i) r.history.push_back(points[i].value);
+    r.valuePct = q.last;
+    r.prevPct = q.prevClose;
+    r.stamp = q.lastTimedate;
     return r;
 }
 
@@ -237,6 +191,106 @@ inline std::optional<std::vector<double>> parseYahooDailyCloses(const std::strin
     }
     if (out.size() < 2) return std::nullopt;
     return out;
+}
+
+// ---- Yahoo v8 chart OHLCV candles (v0.6.15 drill-in) -------------------
+// The section drill-in's parser: timestamp[] plus
+// indicators.quote[0]'s open/high/low/close/volume arrays, zipped.
+// STRICTNESS: an explicit chart.error, a missing/short array, a
+// non-number where a number sits, a non-positive OHLC value, or
+// out-of-order timestamps all poison the fetch (nullopt) — same
+// family rule as the closes parser. The one skip: a bar with ANY
+// null OHLC leg is Yahoo's halt / no-trade / still-forming mark —
+// a partial bar is not a candle, so it is dropped, not drawn
+// (verified live 2026-11-03: TLT's 1mo payload carries a null-close
+// bar mid-series). Volume is softer: a null volume reads as 0 (the
+// index feeds report all-zero volume legitimately — ^VIX verified
+// live — and Model's candleRange hasVolume flag is what tells the
+// chart to say "no volume from this feed").
+inline std::optional<std::vector<Candle>> parseYahooCandles(const std::string& body) {
+    auto root = parseJson(body);
+    if (!root || !root->isObject()) return std::nullopt;
+    const Json* chart = root->find("chart");
+    if (chart == nullptr || !chart->isObject()) return std::nullopt;
+    if (const Json* err = chart->find("error"); err != nullptr && !err->isNull())
+        return std::nullopt;
+    const Json* result = chart->find("result");
+    if (result == nullptr || !result->isArray() || result->array.size() == 0) return std::nullopt;
+    const Json* first = result->at(0);
+    if (first == nullptr || !first->isObject()) return std::nullopt;
+    const Json* stamps = first->find("timestamp");
+    if (stamps == nullptr || !stamps->isArray()) return std::nullopt;
+    const Json* indicators = first->find("indicators");
+    if (indicators == nullptr || !indicators->isObject()) return std::nullopt;
+    const Json* quoteArr = indicators->find("quote");
+    if (quoteArr == nullptr || !quoteArr->isArray() || quoteArr->array.size() == 0) return std::nullopt;
+    const Json* quote0 = quoteArr->at(0);
+    if (quote0 == nullptr || !quote0->isObject()) return std::nullopt;
+    const Json* opens = quote0->find("open");
+    const Json* highs = quote0->find("high");
+    const Json* lows = quote0->find("low");
+    const Json* closes = quote0->find("close");
+    const Json* vols = quote0->find("volume");
+    if (opens == nullptr || !opens->isArray() || highs == nullptr || !highs->isArray() ||
+        lows == nullptr || !lows->isArray() || closes == nullptr || !closes->isArray())
+        return std::nullopt;
+    const size_t n = stamps->array.size();
+    if (opens->array.size() != n || highs->array.size() != n ||
+        lows->array.size() != n || closes->array.size() != n)
+        return std::nullopt;
+    if (vols != nullptr && (!vols->isArray() || vols->array.size() != n)) return std::nullopt;
+    std::vector<Candle> out;
+    int64_t lastTs = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const Json* tsJ = stamps->at((int)i);
+        if (tsJ == nullptr) return std::nullopt;
+        auto ts = tsJ->asNumber();
+        if (!ts || *ts <= 0.0) return std::nullopt;
+        const Json* legs[4] = { opens->at((int)i), highs->at((int)i), lows->at((int)i), closes->at((int)i) };
+        bool nullLeg = false;
+        for (const Json* leg : legs) {
+            if (leg == nullptr) return std::nullopt;
+            if (leg->isNull()) nullLeg = true;
+        }
+        if (nullLeg) continue;  // halt / no-trade / forming bar — not a candle
+        double v[4];
+        for (int k = 0; k < 4; ++k) {
+            auto num = legs[k]->asNumber();
+            if (!num || *num <= 0.0) return std::nullopt;
+            v[k] = *num;
+        }
+        double vol = 0.0;
+        if (vols != nullptr) {
+            const Json* volJ = vols->at((int)i);
+            if (volJ == nullptr) return std::nullopt;
+            if (!volJ->isNull()) {
+                auto vn = volJ->asNumber();
+                if (!vn || *vn < 0.0) return std::nullopt;
+                vol = *vn;
+            }
+        }
+        const int64_t tMs = (int64_t)(*ts) * 1000;
+        if (!out.empty() && tMs <= lastTs) return std::nullopt;  // source order is part of the shape
+        lastTs = tMs;
+        Candle c;
+        c.tOpenMs = tMs;
+        c.open = v[0]; c.high = v[1]; c.low = v[2]; c.close = v[3];
+        c.volume = vol;
+        out.push_back(c);
+    }
+    if (out.size() < 2) return std::nullopt;
+    return out;
+}
+
+// What the section drill-in says about its feed — named on the
+// chart like the crypto detail's notes, per range.
+inline std::string yahooDetailNote(DetailRange range) {
+    switch (range) {
+        case DetailRange::H24: return "Yahoo candles: full OHLC + volume (5m).";
+        case DetailRange::D7:  return "Yahoo candles: full OHLC + volume (30m).";
+        case DetailRange::D30: return "Yahoo candles: full OHLC + volume (daily).";
+    }
+    return "Yahoo candles.";
 }
 
 // ---- Market Internals: computed proxies --------------------------------

@@ -258,8 +258,6 @@ private:
 // screen instead of being squeezed or clipped away. Pure 1-D math on
 // the bar axis (width when horizontal, height when vertical); the
 // app feeds natural extents and a free-running pixel offset.
-inline constexpr int kMarqueeLoopGapPx = 56; // blank run between the last cell and the first cell's re-entry
-
 // Total natural extent of the strip: extents + the gaps between them.
 inline int stripNaturalExtent(const std::vector<int>& extents, int gap) {
     int total = 0;
@@ -272,10 +270,23 @@ inline bool marqueeNeeded(const std::vector<int>& extents, int gap, int avail) {
     return !extents.empty() && stripNaturalExtent(extents, gap) > avail;
 }
 
-// One full loop of the scroll: the content plus the loop gap.
+// One full loop of the scroll: the content plus ONE ordinary
+// inter-cell gap. v0.6.15 (Jackson, with a screenshot of the wrap):
+// "theres a space where the cells repeat can we get rid of the
+// space and have it like the rest of the cells space?" — the loop
+// gap used to be a wider blank run (kMarqueeLoopGapPx = 56) so the
+// wrap point read as a hole in the strip; now the last-to-first
+// spacing is exactly the spacing between any two cells, and the
+// wrap is indistinguishable from ordinary spacing.
 inline int marqueeCycle(const std::vector<int>& extents, int gap) {
-    return stripNaturalExtent(extents, gap) + kMarqueeLoopGapPx;
+    return stripNaturalExtent(extents, gap) + gap;
 }
+
+// The marquee's advance rate. v0.4.0 shipped 45 px/s (news-ticker
+// pace); v0.6.15 raises it 10% at Jackson's ask ("increase the
+// speed of the cell movement speed by 10%") — one constant, so
+// every section and both orientations move at the same speed.
+inline constexpr double kMarqueeSpeedPxPerSec = 45.0 * 1.10; // 49.5
 
 // Strip-relative position of the item whose un-scrolled base offset
 // is `base`, at scroll `offset` in a loop of `cycle` px. The result
@@ -303,60 +314,82 @@ inline int marqueeSplitterRel(int itemRel, int itemExtent, int gap, int splitter
 }
 
 // ------------------------------------------------------------------
-// MODE SELECTOR (v0.6.14) — Jackson asked for the rotation-section
-// switcher ON the bar, at the left end of the main strip (since
-// v0.6.11 it lived only in Settings and the burger Menu, and he
-// never found it there). The selector is chrome, not content: it
-// claims the strip's left end BEFORE the cells/marquee layout runs,
-// and its form follows the room rules below so it can never crush
-// the strip it sits in.
-//   Expanded  — all five segments in a row, the active one marked.
+// MODE SELECTOR (v0.6.14; VERTICAL RAIL v0.6.15) — Jackson asked
+// for the rotation-section switcher ON the bar (since v0.6.11 it
+// lived only in Settings and the burger Menu, and he never found
+// it there). v0.6.14 put it at the strip's left end as a horizontal
+// row of segments; his field verdict on that (2026-11-03, with a
+// screenshot): "instead of doing left to right do top to bottom on
+// the left side so its not so annoying". So the expanded form is
+// now a VERTICAL RAIL on the bar's left side: the five modes
+// stacked top-to-bottom, the active one marked. The rail is
+// chrome, not content — it claims its column BEFORE the toolbar /
+// cells layout runs, and the strip keeps the full remaining width.
+//   Expanded  — the rail: all five segments stacked, active marked.
 //   Collapsed — one button showing the current mode; a click opens
 //               the section menu (full names, the active one ticked).
 //   Hidden    — no room even for the button; Settings and the Menu
 //               still switch (the same persisted field throughout).
-// Horizontal, the selector eats strip width, so the forms are gated
-// on the REMAINDER the strip keeps after it. Vertical, the selector
-// is its own full-width row under the toolbar cluster, so the gate
-// is that row's own width. The app measures the short labels at its
-// paint font and passes the widths in (the titleContextExtent
-// pattern); the arithmetic is pinned here.
+// The rail trades VERTICAL room for its width: on a horizontal bar
+// it spans the bar's full content height and expands only when
+// that height fits five legible rows (modeRailFits); when it
+// cannot fit, the selector falls back to the collapsed button at
+// the strip's left end, gated on the strip remainder as in
+// v0.6.14 (modeSelectorFallbackForm). On a VERTICAL bar the rail
+// is a column block under the toolbar rows — same stacked form —
+// gated on the height it leaves the cells (modeRailFormV), with
+// the same collapsed fallback. The app measures the short labels
+// at its paint font and passes the widths in (the
+// titleContextExtent pattern); the arithmetic is pinned here.
 enum class ModeSelectorForm { Hidden, Collapsed, Expanded };
 inline constexpr int kModeSelectorSegPadPx = 7;     // horizontal padding inside one segment (and the collapsed button)
 inline constexpr int kModeSelectorChevronPx = 12;   // collapsed form: room for the dropdown triangle
-inline constexpr int kModeSelectorKeepPx = 300;     // strip remainder the EXPANDED form must leave behind
-inline constexpr int kModeSelectorKeepMinPx = 150;  // ...and the COLLAPSED form (about one minimum cell + dividers)
+inline constexpr int kModeSelectorKeepMinPx = 150;  // strip remainder the COLLAPSED form must leave behind (about one minimum cell + dividers)
+inline constexpr int kModeRailSegMinPx = 15;        // minimum height of one rail row (an 11-12 px label stays legible)
+inline constexpr int kModeRailKeepVPx = 56;         // vertical bar: height the rail must leave the cells (one minimum row)
 
-inline int modeSelectorNaturalWidth(const std::vector<int>& labelWidths) {
-    int w = 0;
-    for (int lw : labelWidths) w += std::max(0, lw) + 2 * kModeSelectorSegPadPx;
-    return w;
-}
 inline int modeSelectorCollapsedWidth(int currentLabelW) {
     return std::max(0, currentLabelW) + 2 * kModeSelectorSegPadPx + kModeSelectorChevronPx;
-}
-inline ModeSelectorForm modeSelectorFormH(int stripW, int naturalW, int collapsedW) {
-    if (naturalW > 0 && stripW - naturalW >= kModeSelectorKeepPx) return ModeSelectorForm::Expanded;
-    if (collapsedW > 0 && stripW - collapsedW >= kModeSelectorKeepMinPx) return ModeSelectorForm::Collapsed;
-    return ModeSelectorForm::Hidden;
-}
-inline ModeSelectorForm modeSelectorFormV(int rowW, int naturalW, int collapsedW) {
-    if (naturalW > 0 && naturalW <= rowW) return ModeSelectorForm::Expanded;
-    if (collapsedW > 0 && collapsedW <= rowW) return ModeSelectorForm::Collapsed;
-    return ModeSelectorForm::Hidden;
 }
 inline int modeSelectorExtent(ModeSelectorForm f, int naturalW, int collapsedW) {
     return f == ModeSelectorForm::Expanded ? naturalW
          : f == ModeSelectorForm::Collapsed ? collapsedW : 0;
 }
-// The expanded form's segments divide the granted extent equally.
-// Segment i spans [modeSegmentX0, modeSegmentX1); the hit test maps
-// an x back to its segment (-1 outside).
-inline int modeSegmentX0(int i, int extent, int count) { return count > 0 ? i * extent / count : 0; }
-inline int modeSegmentX1(int i, int extent, int count) { return count > 0 ? (i + 1) * extent / count : 0; }
-inline int modeSegmentAt(int x, int extent, int count) {
-    if (count <= 0 || extent <= 0 || x < 0 || x >= extent) return -1;
-    const int i = x * count / extent;
+// The rail's natural height: one minimum row per mode.
+inline int modeRailNaturalHeight(int count) {
+    return count > 0 ? count * kModeRailSegMinPx : 0;
+}
+// The rail's width: its widest label plus the segment padding —
+// the rail is only ever as wide as its longest mode name.
+inline int modeRailWidth(int maxLabelW) {
+    return std::max(0, maxLabelW) + 2 * kModeSelectorSegPadPx;
+}
+// Horizontal bar: the rail expands iff the bar's content height
+// fits its natural height. (Its width is never the constraint —
+// at ~70 px it costs less than one cell.)
+inline bool modeRailFits(int contentH, int naturalH) {
+    return naturalH > 0 && contentH >= naturalH;
+}
+// Vertical bar: the rail expands iff the height available at its
+// slot fits its natural height AND leaves the cells a minimum row.
+inline ModeSelectorForm modeRailFormV(int availH, int naturalH) {
+    if (naturalH > 0 && availH >= naturalH + kModeRailKeepVPx) return ModeSelectorForm::Expanded;
+    return ModeSelectorForm::Collapsed;
+}
+// The collapsed fallback's gate (both orientations): the button
+// shows only while the strip keeps its minimum remainder.
+inline ModeSelectorForm modeSelectorFallbackForm(int stripW, int collapsedW) {
+    if (collapsedW > 0 && stripW - collapsedW >= kModeSelectorKeepMinPx) return ModeSelectorForm::Collapsed;
+    return ModeSelectorForm::Hidden;
+}
+// The rail's segments divide its granted height equally. Segment
+// i spans [modeSegmentY0, modeSegmentY1); the hit test maps a y
+// back to its segment (-1 outside).
+inline int modeSegmentY0(int i, int extent, int count) { return count > 0 ? i * extent / count : 0; }
+inline int modeSegmentY1(int i, int extent, int count) { return count > 0 ? (i + 1) * extent / count : 0; }
+inline int modeSegmentAtY(int y, int extent, int count) {
+    if (count <= 0 || extent <= 0 || y < 0 || y >= extent) return -1;
+    const int i = y * count / extent;
     return i < count ? i : count - 1;
 }
 

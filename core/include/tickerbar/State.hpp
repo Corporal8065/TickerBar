@@ -62,6 +62,12 @@ struct TickerState {
     // domCellWidth are inert legacy extents, still persisted so old
     // files round-trip untouched.
     int rotationSection = 0;
+    // v0.6.15: the user's own tickers for the Stocks section
+    // (Sections.hpp's cleanCustomStocks form: normalized, deduped,
+    // capped at 50). They lead the Stocks rotation ahead of the Top
+    // 100. Appended field: older settings files lack the key and
+    // load with the default — no custom tickers.
+    std::vector<std::string> customStocks;
 };
 
 // RESET LAYOUT TO DEFAULTS (v0.3.2, Vishona's request) — restores

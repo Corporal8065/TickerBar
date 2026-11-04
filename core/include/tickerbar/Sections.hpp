@@ -6,12 +6,28 @@
 //   - quotes: CNBC's public restQuote batch endpoint (the same JSON
 //     the cnbc.com quote pages poll). Verified live 2026-11-03: one
 //     request carries up to 50 symbols, indexes included (.SPX form).
-//   - yields: FRED's public fredgraph CSV (no key at this endpoint).
-//     Verified live 2026-11-03. Daily observations, roughly one
-//     business day of publication lag — cells print the observation
-//     date so the lag is never hidden.
+//   - yields (v0.6.15 RE-ROUTE): the same CNBC batch — US3M / US2Y /
+//     US5Y / US10Y / US30Y, verified live 2026-11-03 (the undotted
+//     forms; the dotted .US10Y forms answer code 1 = unknown). These
+//     are LIVE Tradeweb yields, polled every minute; the payload
+//     carries the quote's own timestamp (last_timedate), never an
+//     observation date, and the cell prints that time as-is.
+//     The v0.6.11 route — FRED's fredgraph CSV — was REMOVED in
+//     v0.6.15: Jackson's field report showed the yield cells stuck
+//     at "loading..." on a real Windows machine while the CNBC
+//     cells beside them loaded, and from this host the mechanism
+//     reproduces at the HTTP layer — DNS/TCP/TLS to
+//     fred.stlouisfed.org complete in ~0.4 s and then NO response
+//     bytes ever arrive (the homepage stalls identically). A feed
+//     whose connections are accepted and never answered is worse
+//     than none: each fetch could stall the section poller behind
+//     it. CNBC's pipe is the one already proven on user machines.
 //   - sparklines: Yahoo Finance's public v8 chart endpoint (daily
 //     closes). Verified live 2026-11-03.
+//   - drill-in candles (v0.6.15): Yahoo v8 chart OHLCV at intraday
+//     intervals (see yahooDetailChartUrl) — the same endpoint
+//     family as the sparklines, verified live 2026-11-03 for
+//     stocks, ETFs, the index symbols (^GSPC etc.) and ^VIX.
 // Stooq was evaluated for this round and REJECTED: its CSV endpoints
 // answer plain HTTP clients with an HTML error page / a JavaScript
 // proof-of-work wall (verified live 2026-11-03), so the app could
@@ -24,9 +40,11 @@
 // and the cells say so.
 #pragma once
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
+#include "Model.hpp"
 #include "Top100.hpp"
 
 namespace tickerbar {
@@ -74,10 +92,10 @@ inline const char* rotationSectionShortName(int idx) {
 // another section or the title rotator stale.
 inline constexpr double kCnbcMainPollSec    = 45.0;    // ETFs/indexes + bond ETFs, one batch
 inline constexpr double kCnbcTop100PollSec  = 90.0;    // two batches of 50
-inline constexpr double kFredPollSec        = 1800.0;  // daily data; a slow clock is honest
+inline constexpr double kCnbcYieldPollSec   = 60.0;    // v0.6.15: the five yields, one batch (Jackson's 1-minute pick)
 inline constexpr double kSectionStaleSec    = 3.0 * kCnbcMainPollSec;    // 135
 inline constexpr double kTop100StaleSec     = 3.0 * kCnbcTop100PollSec;  // 270
-inline constexpr double kFredStaleSec       = 3.0 * kFredPollSec;        // 5400
+inline constexpr double kYieldStaleSec      = 3.0 * kCnbcYieldPollSec;   // 180 — the 3x rule on the REAL (CNBC, 1-minute) cadence
 // Yahoo daily closes are sparkline garnish: refresh a missing/old
 // series opportunistically, never block a cell's quote on them.
 inline constexpr double kYahooSeriesRefreshSec = 6.0 * 3600.0;
@@ -124,28 +142,24 @@ inline const std::vector<SectionSymbol>& bondEtfSymbols() {
 }
 
 struct YieldSeriesDef {
-    const char* fredId;   // FRED series id
+    const char* cnbc;     // CNBC restQuote id (verified live 2026-11-03)
     const char* display;  // cell title
     const char* label;    // full name, for tooltips
 };
 
-// The Treasury curve points the Bonds section shows. Yields are
-// percent per annum, FRED "Market Yield on U.S. Treasury Securities"
-// (DGS) daily series.
+// The Treasury curve points the Bonds section shows: live Tradeweb
+// yields in percent per annum, served by the CNBC batch (v0.6.15 —
+// see the header note for the FRED removal).
 inline const std::vector<YieldSeriesDef>& treasuryYieldSeries() {
     static const std::vector<YieldSeriesDef> k = {
-        { "DGS3MO", "3M",  "3-month Treasury yield (FRED DGS3MO)" },
-        { "DGS2",   "2Y",  "2-year Treasury yield (FRED DGS2)" },
-        { "DGS5",   "5Y",  "5-year Treasury yield (FRED DGS5)" },
-        { "DGS10",  "10Y", "10-year Treasury yield (FRED DGS10)" },
-        { "DGS30",  "30Y", "30-year Treasury yield (FRED DGS30)" },
+        { "US3M",  "3M",  "3-month U.S. Treasury yield (live, CNBC/Tradeweb)" },
+        { "US2Y",  "2Y",  "2-year U.S. Treasury yield (live, CNBC/Tradeweb)" },
+        { "US5Y",  "5Y",  "5-year U.S. Treasury yield (live, CNBC/Tradeweb)" },
+        { "US10Y", "10Y", "10-year U.S. Treasury yield (live, CNBC/Tradeweb)" },
+        { "US30Y", "30Y", "30-year U.S. Treasury yield (live, CNBC/Tradeweb)" },
     };
     return k;
 }
-
-// VIX history for the Internals VIX sparkline rides FRED too
-// (CBOE's own CSV is behind a bot wall — see the header note).
-inline constexpr const char* kFredVixSeriesId = "VIXCLS";
 
 // One cell of a section, in display order. Strings (not const char*)
 // because the Top-100 Yahoo ids are derived ("." -> "-").
@@ -159,9 +173,8 @@ enum class SectionCellKind {
 struct SectionCellDef {
     SectionCellKind kind = SectionCellKind::Quote;
     std::string display;   // cell title; also the quote-map key
-    std::string cnbc;      // Quote kind: CNBC id
+    std::string cnbc;      // Quote kind: CNBC id; Yield kind: the CNBC yield id (US10Y form)
     std::string yahoo;     // Quote kind: sparkline symbol ("" = none)
-    std::string fredId;    // Yield kind: FRED series id
     std::string label;     // tooltip text
 };
 
@@ -176,33 +189,138 @@ inline std::vector<SectionCellDef> sectionCells(int sectionIdx) {
     switch (sectionIdx) {
         case (int)RotationSection::EtfsIndexes:
             for (const auto& s : etfIndexSymbols())
-                out.push_back({ SectionCellKind::Quote, s.display, s.cnbc, s.yahoo, "", s.label });
+                out.push_back({ SectionCellKind::Quote, s.display, s.cnbc, s.yahoo, s.label });
             break;
         case (int)RotationSection::Top100:
             for (const auto& e : top100Stocks())
                 out.push_back({ SectionCellKind::Quote, e.symbol, e.symbol,
-                                yahooSymbolFor(e.symbol), "", e.name });
+                                yahooSymbolFor(e.symbol), e.name });
             break;
         case (int)RotationSection::Bonds:
             for (const auto& y : treasuryYieldSeries())
-                out.push_back({ SectionCellKind::Yield, y.display, "", "", y.fredId, y.label });
+                out.push_back({ SectionCellKind::Yield, y.display, y.cnbc, "", y.label });
             for (const auto& s : bondEtfSymbols())
-                out.push_back({ SectionCellKind::Quote, s.display, s.cnbc, s.yahoo, "", s.label });
+                out.push_back({ SectionCellKind::Quote, s.display, s.cnbc, s.yahoo, s.label });
             break;
         case (int)RotationSection::Internals:
             out.push_back({ SectionCellKind::Quote, "VIX", ".VIX", "",
-                            "", "CBOE Volatility Index (quote: CNBC)" });
+                            "CBOE Volatility Index (quote: CNBC)" });
             out.push_back({ SectionCellKind::InternalsAdv, "ADVANCERS", "", "",
-                            "", "Share of Top 100 stocks up on the day — computed proxy" });
+                            "Share of Top 100 stocks up on the day — computed proxy" });
             out.push_back({ SectionCellKind::InternalsMedian, "MEDIAN", "", "",
-                            "", "Median day change across the Top 100 — computed proxy" });
+                            "Median day change across the Top 100 — computed proxy" });
             out.push_back({ SectionCellKind::InternalsEqWt, "EQUAL WT", "", "",
-                            "", "Equal-weight mean day change across the Top 100 — computed proxy" });
+                            "Equal-weight mean day change across the Top 100 — computed proxy" });
             break;
         default:
             break;  // Crypto has no section cells (the watchlist rules it)
     }
     return out;
+}
+
+// ------------------------------------------------------------------
+// v0.6.15 additions: drill-in routing, user tickers, and the two
+// display rules Jackson handed down with the v0.6.14 screenshot.
+
+// The Yahoo symbol whose v8 chart draws a section cell's drill-in,
+// or "" when the cell has no chart: Treasury yields and the
+// computed Internals cells never chart (there is no traded
+// instrument behind a computed proxy, and inventing one would be a
+// fake chart). The Internals VIX cell carries no Yahoo id of its
+// own (its sparkline borrows the Indexes row's ^VIX series), but
+// the instrument is the same VIX, whose ^VIX chart verified live
+// 2026-11-03 — so it drills in too. Index cells already carry
+// their Yahoo symbols (^GSPC form) in the table.
+inline std::string drillInYahooSymbol(const SectionCellDef& def) {
+    if (def.kind != SectionCellKind::Quote) return "";
+    if (!def.yahoo.empty()) return def.yahoo;
+    if (def.display == "VIX") return "^VIX";
+    return "";
+}
+
+// The title-bar context rotator (Fear & Greed / BTC dominance) is
+// CRYPTO context: it shows only in the Crypto section (with the
+// title bar's own room rule applied on top by the app), and hides
+// entirely in every other section — no replacement content
+// (Jackson, 2026-11-03: it "needs to be swapped off when switching
+// off of crypto").
+inline bool titleContextWanted(int sectionIdx, bool showFng, bool showDom) {
+    return sectionIdx == (int)RotationSection::Crypto && (showFng || showDom);
+}
+
+// Section strip movement: every section rides the overflow marquee
+// when its cells cannot fit. BONDS is the exception (Jackson,
+// 2026-11-03: "add the move as well to bonds"): its natural extent
+// (11 cells x 148 + gaps = 1788 px) FITS a wide bar where Indexes
+// (1952 px) and Top 100 (far wider) still overflow — so on a wide
+// bar Bonds sat fitted and static while the others scrolled. The
+// Bonds strip therefore runs the marquee even when it fits, at
+// the same speed as every other section (Layout's
+// kMarqueeSpeedPxPerSec — one speed for the whole strip family).
+inline bool sectionMarqueeForced(int sectionIdx) {
+    return sectionIdx == (int)RotationSection::Bonds;
+}
+
+// ---- Stocks: the user's own tickers (v0.6.15) ---------------------
+// Jackson: "for the stocks a spot to add the tickers." His symbols
+// LEAD the Stocks rotation (his names first), the bundled Top 100
+// follows; a symbol he names that is also in the Top 100 appears
+// once, in his lead position. Quotes ride a third CNBC batch (the
+// Top-100 halves are computed from the bundled table, so customs
+// cannot join them), capped at one batch of 50.
+inline constexpr size_t kMaxCustomStocks = 50;
+
+// One raw Settings entry -> the stored form: trimmed, uppercased,
+// only the characters a CNBC/Yahoo symbol can carry (letters,
+// digits, the class-share dot). "" when the entry is unusable.
+inline std::string normalizeStockTicker(const std::string& raw) {
+    std::string out;
+    for (char c : raw) {
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        const bool ok = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.';
+        if (!ok) return "";
+        out += c;
+    }
+    if (out.empty() || out.size() > 12) return "";
+    if (out.front() == '.' || out.back() == '.') return "";
+    return out;
+}
+
+// Stored-list hygiene, shared by the settings loader and Settings'
+// Add: normalize, drop unusable entries, dedupe (first wins), cap.
+inline std::vector<std::string> cleanCustomStocks(const std::vector<std::string>& raw) {
+    std::vector<std::string> out;
+    for (const auto& s : raw) {
+        const std::string n = normalizeStockTicker(s);
+        if (n.empty()) continue;
+        if (std::find(out.begin(), out.end(), n) != out.end()) continue;
+        out.push_back(n);
+        if (out.size() >= kMaxCustomStocks) break;
+    }
+    return out;
+}
+
+// The Stocks section's cells with the user's tickers leading.
+inline std::vector<SectionCellDef> stocksSectionCells(const std::vector<std::string>& customRaw) {
+    const auto custom = cleanCustomStocks(customRaw);
+    std::vector<SectionCellDef> out;
+    for (const auto& sym : custom)
+        out.push_back({ SectionCellKind::Quote, sym, sym, yahooSymbolFor(sym),
+                        "Your ticker — CNBC public quotes" });
+    for (const auto& e : top100Stocks()) {
+        if (std::find(custom.begin(), custom.end(), std::string(e.symbol)) != custom.end())
+            continue;  // already shown in the lead, in his position
+        out.push_back({ SectionCellKind::Quote, e.symbol, e.symbol,
+                        yahooSymbolFor(e.symbol), e.name });
+    }
+    return out;
+}
+
+// The custom batch's CNBC ids, in stored order (identity-mapped to
+// display symbols by the client).
+inline std::vector<std::string> cnbcCustomBatchIds(const std::vector<std::string>& customRaw) {
+    return cleanCustomStocks(customRaw);
 }
 
 // The CNBC symbol ids of one batch request, in request order: the
@@ -235,16 +353,33 @@ inline std::string cnbcBatchUrl(const std::vector<std::string>& cnbcIds) {
     url += "&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json";
     return url;
 }
-// cosd bounds the CSV to a window ending today (FRED serves the full
-// history otherwise — DGS10 starts in 1962).
-inline std::string fredCsvUrl(const std::string& seriesId, const std::string& cosd) {
-    return "https://fred.stlouisfed.org/graph/fredgraph.csv?id=" + seriesId + "&cosd=" + cosd;
+// The yield batch's CNBC ids (US3M form), in curve order — the
+// v0.6.15 re-route's whole request, one batch of five.
+inline std::vector<std::string> cnbcYieldBatchIds() {
+    std::vector<std::string> out;
+    for (const auto& y : treasuryYieldSeries()) out.emplace_back(y.cnbc);
+    return out;
 }
+
 inline std::string yahooChartUrl(const std::string& yahooSymbol) {
     std::string sym;
     for (char c : yahooSymbol) sym += (c == '^') ? "%5E" : std::string(1, c);
     return "https://query1.finance.yahoo.com/v8/finance/chart/" + sym +
            "?range=1mo&interval=1d";
+}
+
+// The drill-in chart's URL (v0.6.15): the v8 endpoint at the
+// detail ranges' grains. D7 uses range=7d — verified live on
+// query1, 2026-11-03 (92 bars of 30m for SPY). Same host and
+// symbol escaping as the sparkline URL above; Model.hpp's
+// candleRange() windows match what these return.
+inline std::string yahooDetailChartUrl(const std::string& yahooSymbol, DetailRange range) {
+    std::string sym;
+    for (char c : yahooSymbol) sym += (c == '^') ? "%5E" : std::string(1, c);
+    const char* grain = range == DetailRange::H24 ? "range=1d&interval=5m"
+                      : range == DetailRange::D7  ? "range=7d&interval=30m"
+                                                  : "range=1mo&interval=1d";
+    return "https://query1.finance.yahoo.com/v8/finance/chart/" + sym + "?" + grain;
 }
 
 } // namespace tickerbar

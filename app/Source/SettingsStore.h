@@ -57,6 +57,11 @@ inline juce::var toVar(const tickerbar::TickerState& s) {
     set("fngWidth", s.fngCellWidth);
     set("domWidth", s.domCellWidth);
     set("rotationSection", s.rotationSection); // v0.6.11 (absent in older files -> Crypto)
+    { // v0.6.15: the Stocks section's user tickers (absent in older files -> none)
+        juce::Array<juce::var> arr;
+        for (auto& sym : s.customStocks) arr.add(juce::var(juce::String(sym)));
+        set("customStocks", juce::var(arr));
+    }
     return juce::var(o);
 }
 inline tickerbar::TickerState fromVar(const juce::var& v) {
@@ -124,6 +129,11 @@ inline tickerbar::TickerState fromVar(const juce::var& v) {
     s.domCellWidth = gw("domWidth", s.domCellWidth);
     s.rotationSection = juce::jlimit(0, tickerbar::kRotationSectionCount - 1,
                                      gi("rotationSection", s.rotationSection));
+    if (auto* arr = g("customStocks").getArray()) { // v0.6.15
+        std::vector<std::string> raw;
+        for (auto& item : *arr) raw.push_back(item.toString().toStdString());
+        s.customStocks = tickerbar::cleanCustomStocks(raw);
+    }
     return s;
 }
 inline tickerbar::TickerState load() {

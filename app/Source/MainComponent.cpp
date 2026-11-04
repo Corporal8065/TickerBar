@@ -267,18 +267,20 @@ private:
 };
 
 // QuoteCell — one rotation-section cell (v0.6.11): an index/ETF/
-// stock quote, a FRED yield, or a computed Internals proxy. Same
-// visual language and stale honesty as a CoinCell, but the change
-// figure is the DAY change (the crypto cells' "1h" figure comes
-// from hourly candles these sources do not have — nothing here may
-// wear that label). Text arrives pre-formatted from
+// stock quote, a Treasury yield, or a computed Internals proxy.
+// Same visual language and stale honesty as a CoinCell, but the
+// change figure is the DAY change (the crypto cells' "1h" figure
+// comes from hourly candles these sources do not have — nothing
+// here may wear that label). Text arrives pre-formatted from
 // MainComponent::refreshSections; every element draws SINGLE
 // (v0.6.10 rule). A press drags the window via the same arbitration
-// as the context cells used; quote cells have no click action.
+// as the context cells used; since v0.6.15 a clean click opens the
+// drill-in on the cells that have one.
 // =====================================================================
 class QuoteCell : public juce::Component, public juce::SettableTooltipClient {
 public:
     MainComponent* owner = nullptr;
+    int defIndex = -1; // v0.6.15: this cell's row in sectionDefs_ (the drill-in's key)
     juce::String title, valueText, pctText, subText;
     juce::Colour pctColour, lineColour;
     std::vector<double> series;
@@ -298,7 +300,14 @@ public:
     }
     void mouseDown(const juce::MouseEvent& e) override { owner->cellDragBegin(this, e); }
     void mouseDrag(const juce::MouseEvent& e) override { owner->cellDragMove(this, e); }
-    void mouseUp(const juce::MouseEvent& e) override { owner->cellDragEnd(this, e); }
+    void mouseUp(const juce::MouseEvent& e) override {
+        if (owner->cellDragEnd(this, e)) return;
+        // v0.6.15: a clean click opens the drill-in where this cell
+        // has one (Quote-kind cells with a Yahoo chart — see
+        // openSectionDetail; Treasury yields and the computed
+        // Internals cells have no chart and the click does nothing).
+        if (e.getDistanceFromDragStart() < 5 && e.mouseWasClicked()) owner->openSectionDetail(this);
+    }
     void paint(juce::Graphics& g) override {
         const auto& th = owner->theme();
         auto b = getLocalBounds().toFloat().reduced(1.f);
@@ -335,7 +344,7 @@ public:
         textpop::drawSingle(g, has ? valueText : juce::String("--"), r.removeFromTop(24.f),
                             juce::Justification::centredLeft, (has ? th.text : th.dim).withAlpha(alpha));
         // bottom: sparkline when a series exists (the sub line — a
-        // yield's observation date — keeps a small strip under it),
+        // yield's quote time — keeps a small strip under it),
         // else the sub line alone (day range / "computed proxy" /
         // waiting state).
         if (series.size() >= 2) {
@@ -471,17 +480,26 @@ private:
 };
 
 // =====================================================================
-// ModeSelector — v0.6.14: the rotation-section switcher ON the bar,
-// at the left end of the main strip (Jackson's ask — since v0.6.11
-// the sections lived only in Settings > Rotation and Menu >
-// Rotation, and he never found them there). Three surfaces, ONE
-// state: this selector, the Settings combo and the Menu submenu all
-// read/write MainComponent::rotationSection()/setRotationSection()
-// over the same persisted TickerState::rotationSection field — no
-// new settings keys. Short labels (core rotationSectionShortName);
+// ModeSelector — v0.6.14: the rotation-section switcher ON the bar
+// (Jackson's ask — since v0.6.11 the sections lived only in
+// Settings > Rotation and Menu > Rotation, and he never found them
+// there). v0.6.15: a VERTICAL RAIL on the bar's left side — his
+// field verdict on the v0.6.14 horizontal row: "instead of doing
+// left to right do top to bottom on the left side so its not so
+// annoying". The five modes stack top-to-bottom (Crypto, Indexes,
+// Stocks, Bonds, Internals); the active one is marked as before
+// (accent wash + accent bar, full-brightness text; the bar now
+// runs down the segment's LEFT edge instead of along its bottom).
+// Three surfaces, ONE state: this selector, the Settings combo
+// and the Menu submenu all read/write
+// MainComponent::rotationSection()/setRotationSection() over the
+// same persisted TickerState::rotationSection field — no new
+// settings keys. Short labels (core rotationSectionShortName);
 // full names ride the tooltips and the section menu. The form
-// (expanded segments / collapsed current-mode button / hidden) is
-// the core room rule's verdict, handed in by resized(); text draws
+// (expanded rail / collapsed current-mode button / hidden) is the
+// core room rule's verdict, handed in by resized(); when the bar
+// is too short for the rail, the collapsed button falls back to
+// the strip's left end exactly as v0.6.14 placed it. Text draws
 // SINGLE (the v0.6.10 cell rule — this is a cell-like control, not
 // toolbar furniture). A press here is a click, never a window drag
 // (the toolbar buttons set the precedent).
@@ -498,13 +516,16 @@ public:
     }
     tickerbar::ModeSelectorForm form() const { return form_; }
     // Measured extents at the paint font — resized() feeds these to
-    // the core room rule (the titleContextExtent pattern).
-    int naturalWidth() const {
-        std::vector<int> lw;
+    // the core rail rules (the titleContextExtent pattern).
+    int railWidth() const {
+        int maxLw = 0;
         for (int i = 0; i < tickerbar::kRotationSectionCount; ++i)
-            lw.push_back((int)std::ceil(segFont().getStringWidthFloat(
+            maxLw = std::max(maxLw, (int)std::ceil(segFont().getStringWidthFloat(
                 juce::String(tickerbar::rotationSectionShortName(i)))));
-        return tickerbar::modeSelectorNaturalWidth(lw);
+        return tickerbar::modeRailWidth(maxLw);
+    }
+    int railNaturalHeight() const {
+        return tickerbar::modeRailNaturalHeight(tickerbar::kRotationSectionCount);
     }
     int collapsedWidth() const {
         const int lw = (int)std::ceil(segFont().getStringWidthFloat(
@@ -518,23 +539,23 @@ public:
         g.setColour(th.border);
         g.drawRoundedRectangle(b, 6.f, 1.f);
         if (form_ == tickerbar::ModeSelectorForm::Expanded) {
-            const int w = getWidth();
+            const int h = getHeight();
             for (int i = 0; i < tickerbar::kRotationSectionCount; ++i) {
-                const float x0 = (float)tickerbar::modeSegmentX0(i, w, tickerbar::kRotationSectionCount);
-                const float x1 = (float)tickerbar::modeSegmentX1(i, w, tickerbar::kRotationSectionCount);
-                juce::Rectangle<float> seg(x0 + 2.f, b.getY() + 2.f, x1 - x0 - 4.f, b.getHeight() - 4.f);
+                const float y0 = (float)tickerbar::modeSegmentY0(i, h, tickerbar::kRotationSectionCount);
+                const float y1 = (float)tickerbar::modeSegmentY1(i, h, tickerbar::kRotationSectionCount);
+                juce::Rectangle<float> seg(b.getX() + 2.f, y0 + 2.f, b.getWidth() - 4.f, y1 - y0 - 4.f);
                 if (i == active) {
                     g.setColour(th.accent.withAlpha(0.30f));
                     g.fillRoundedRectangle(seg, 4.f);
                     g.setColour(th.accent);
-                    g.fillRect(seg.getX() + 4.f, seg.getBottom() - 2.f, seg.getWidth() - 8.f, 2.f);
+                    g.fillRect(seg.getX() + 2.f, seg.getY() + 4.f, 2.f, seg.getHeight() - 8.f);
                 } else if (i == hoverSeg_) {
                     g.setColour(th.text.withAlpha(0.08f));
                     g.fillRoundedRectangle(seg, 4.f);
                 }
                 if (i > 0) {
                     g.setColour(th.border.withAlpha(0.6f));
-                    g.drawVerticalLine((int)x0, b.getY() + 5.f, b.getBottom() - 5.f);
+                    g.drawHorizontalLine((int)y0, b.getX() + 5.f, b.getRight() - 5.f);
                 }
                 g.setFont(segFont());
                 textpop::drawSingle(g, juce::String(tickerbar::rotationSectionShortName(i)), seg,
@@ -558,7 +579,7 @@ public:
         juce::String tip;
         int hov = -1;
         if (form_ == tickerbar::ModeSelectorForm::Expanded) {
-            hov = tickerbar::modeSegmentAt(e.getPosition().x, getWidth(), tickerbar::kRotationSectionCount);
+            hov = tickerbar::modeSegmentAtY(e.getPosition().y, getHeight(), tickerbar::kRotationSectionCount);
             if (hov >= 0)
                 tip = juce::String(tickerbar::rotationSectionName(hov))
                     + (hov == owner->rotationSection() ? " - current section" : " - click to switch");
@@ -575,7 +596,7 @@ public:
     void mouseUp(const juce::MouseEvent& e) override {
         if (!e.mouseWasClicked()) return;
         if (form_ == tickerbar::ModeSelectorForm::Expanded) {
-            const int i = tickerbar::modeSegmentAt(e.getPosition().x, getWidth(),
+            const int i = tickerbar::modeSegmentAtY(e.getPosition().y, getHeight(),
                                                     tickerbar::kRotationSectionCount);
             if (i >= 0 && i != owner->rotationSection()) {
                 owner->uiClick(ClickSounds::Which::Pop);
@@ -842,6 +863,178 @@ private:
 };
 
 // =====================================================================
+// Section drill-in (v0.6.15, CallOutBox content): the section
+// cells' candlestick chart — the crypto drill-in's sibling, fed by
+// the SectionClient's Yahoo OHLCV candles (see Sections.hpp's
+// drillInYahooSymbol for which cells have one; Treasury yields and
+// the computed Internals cells never open this). Same behaviour as
+// the crypto detail: 24h / 7d / 30d ranges, a 1 Hz poll of the
+// client (which throttles the actual fetches), the chart painting
+// — candles + volume pane with the 52-bar average — and the note
+// line naming the feed that drew the chart. The header stats are
+// the CLICKED CELL's own formatted strings, snapshotted at open,
+// so the popup can never disagree with the cell it came from; the
+// day high / low / previous close ride the raw quote when present.
+// There are NO alert editors here: alerts are a crypto-strip
+// feature (core AlertLevels are keyed to watchlist symbols).
+// =====================================================================
+class SectionDetailComponent : public juce::Component, private juce::Timer {
+public:
+    SectionDetailComponent(MainComponent* o, const tickerbar::SectionCellDef& d,
+                           const juce::String& valueText, const juce::String& pctText,
+                           juce::Colour pctCol,
+                           const std::optional<tickerbar::SectionQuote>& q,
+                           bool isStale, const juce::String& asOf)
+        : owner(o), def(d), yahooSym(tickerbar::drillInYahooSymbol(d)) {
+        auto& th = owner->theme();
+        const juce::String who = (q && !q->name.empty()) ? juce::String(q->name) : juce::String(def.label);
+        title.setText(juce::String(def.display) + "  -  " + who, juce::dontSendNotification);
+        title.setFont(juce::Font(15.f, juce::Font::bold)); title.setColour(juce::Label::textColourId, th.text);
+        addAndMakeVisible(title);
+        asOfLabel.setText(isStale ? ("STALE - last data " + asOf) : ("as of " + asOf), juce::dontSendNotification);
+        asOfLabel.setFont(10.5f); asOfLabel.setColour(juce::Label::textColourId, isStale ? th.warn : th.dim);
+        addAndMakeVisible(asOfLabel);
+        auto row = [&](const juce::String& k, const juce::String& v, juce::Colour vc = juce::Colour()) {
+            auto* l = new juce::Label({}, k + "  " + v);
+            l->setFont(juce::Font(13.f)); l->setColour(juce::Label::textColourId, vc.getARGB() ? vc : th.text);
+            rows.add(l); addAndMakeVisible(l);
+        };
+        if (valueText.isNotEmpty()) row("Last", valueText);
+        if (pctText.isNotEmpty()) row("Day change", pctText, pctCol);
+        if (q) {
+            if (q->high > 0) row("Day high", juce::String(tickerbar::formatPrice(q->high)));
+            if (q->low > 0) row("Day low", juce::String(tickerbar::formatPrice(q->low)));
+            if (q->prevClose > 0) row("Prev close", juce::String(tickerbar::formatPrice(q->prevClose)));
+        }
+        auto styleRangeBtn = [&](juce::TextButton& b, const char* label, tickerbar::DetailRange r) {
+            b.setButtonText(label);
+            b.setClickingTogglesState(true);
+            b.setRadioGroupId(7702);
+            b.setToggleState(range == r, juce::dontSendNotification);
+            b.onClick = [this, r] { range = r; refreshRange(); };
+            addAndMakeVisible(b);
+        };
+        styleRangeBtn(btn24, "24h", tickerbar::DetailRange::H24);
+        styleRangeBtn(btn7, "7d", tickerbar::DetailRange::D7);
+        styleRangeBtn(btn30, "30d", tickerbar::DetailRange::D30);
+        noteLabel.setFont(10.f); noteLabel.setColour(juce::Label::textColourId, th.dim);
+        addAndMakeVisible(noteLabel);
+        refreshRange();
+        startTimerHz(1);
+        setSize(390, 368);
+    }
+    ~SectionDetailComponent() override { stopTimer(); }
+    void timerCallback() override { refreshRange(); }
+    void refreshRange() {
+        auto cs = owner->sectionClient().detailCandles(yahooSym, range);
+        if (cs.empty()) owner->sectionClient().requestDetailCandles(yahooSym, range);
+        candles = std::move(cs);
+        juce::String note = juce::String(owner->sectionClient().detailNote(yahooSym, range));
+        if (note.isEmpty() && candles.empty()) note = "loading...";
+        // The chart names the feed that actually DREW it (the
+        // crypto detail's v0.6.12 rule, same words pattern).
+        const std::string srcName = owner->sectionClient().detailSourceName(yahooSym, range);
+        if (!srcName.empty() && !candles.empty() && !note.startsWith(juce::String(srcName)))
+            note = "Candles: " + juce::String(srcName) + (note.isEmpty() || note == "loading..."
+                        ? juce::String() : ". " + note);
+        if (note != noteLabel.getText()) noteLabel.setText(note, juce::dontSendNotification);
+        repaint();
+    }
+    void paint(juce::Graphics& g) override {
+        const auto& th = owner->theme();
+        g.fillAll(th.panel);
+        auto area = chartArea.toFloat().reduced(6.f);
+        g.setColour(th.deepest); g.fillRoundedRectangle(area, 6.f);
+        if (candles.size() > 1) {
+            auto rangeInfo = tickerbar::candleRange(candles);
+            if (rangeInfo) {
+                // price pane = top ~74%, volume pane = bottom ~20%
+                auto priceArea = area.withHeight(area.getHeight() * 0.74f);
+                auto volArea = area.withTop(area.getBottom() - area.getHeight() * 0.20f);
+                double lo = rangeInfo->lo, hi = rangeInfo->hi;
+                if (!(hi > lo)) { const double pad = std::max(1e-9, hi * 0.005); hi += pad; lo -= pad; }
+                const float step = priceArea.getWidth() / (float)candles.size();
+                const float bodyW = std::max(1.0f, step * 0.62f);
+                // the 52-bar volume moving average + 3-sigma flags
+                // (core ChartMath — the crypto detail's treatment).
+                std::vector<double> vols;
+                for (auto& c : candles) vols.push_back(c.volume);
+                auto vstats = tickerbar::volumeMaSd(vols);
+                double vMaxMa = 0.0;
+                for (auto& vp : vstats) vMaxMa = std::max(vMaxMa, vp.ma);
+                const double vScale = std::max(rangeInfo->maxVolume, vMaxMa);
+                auto yFor = [&](double px) {
+                    return priceArea.getBottom() - (float)((px - lo) / (hi - lo)) * priceArea.getHeight();
+                };
+                for (size_t i = 0; i < candles.size(); ++i) {
+                    const auto& c = candles[i];
+                    const float cx = priceArea.getX() + step * ((float)i + 0.5f);
+                    const bool up = c.close >= c.open;
+                    auto col = (c.close == c.open) ? th.dim : (up ? th.good : th.bad);
+                    g.setColour(col);
+                    g.drawLine(cx, yFor(c.high), cx, yFor(c.low), 1.f); // wick
+                    const float yO = yFor(c.open), yC = yFor(c.close);
+                    const float top = std::min(yO, yC), hgt = std::max(1.f, std::abs(yC - yO));
+                    g.fillRect(cx - bodyW / 2.f, top, bodyW, hgt);       // body
+                    if (rangeInfo->hasVolume && vScale > 0) {
+                        const float vh = (float)(c.volume / vScale) * volArea.getHeight();
+                        const bool hot = i < vstats.size() && vstats[i].hot;
+                        g.setColour(hot ? th.accent : col.withAlpha(0.55f));
+                        g.fillRect(cx - bodyW / 2.f, volArea.getBottom() - vh, bodyW, vh);
+                        if (hot) g.fillRect(cx - bodyW / 2.f, volArea.getBottom() - vh - 3.f, bodyW, 2.f);
+                    }
+                }
+                if (rangeInfo->hasVolume && vScale > 0) {
+                    juce::Path maLine;
+                    bool started = false;
+                    for (size_t i = 0; i < vstats.size(); ++i) {
+                        const float cx = priceArea.getX() + step * ((float)i + 0.5f);
+                        const float y = volArea.getBottom() - (float)(vstats[i].ma / vScale) * volArea.getHeight();
+                        if (!started) { maLine.startNewSubPath(cx, y); started = true; } else maLine.lineTo(cx, y);
+                    }
+                    g.setColour(th.accent2.withAlpha(0.9f));
+                    g.strokePath(maLine, juce::PathStrokeType(1.2f));
+                    g.setColour(th.dim); g.setFont(9.f);
+                    g.drawText("volume: line = 52-bar average - pink cap = bar >= average + 3 sd",
+                               volArea.reduced(4.f, 0.f), juce::Justification::topLeft);
+                }
+                g.setColour(th.dim); g.setFont(9.5f);
+                g.drawText(juce::String(tickerbar::formatPrice(hi)), priceArea.reduced(4.f, 2.f), juce::Justification::topRight);
+                g.drawText(juce::String(tickerbar::formatPrice(lo)), priceArea.reduced(4.f, 2.f), juce::Justification::bottomRight);
+                if (!rangeInfo->hasVolume) {
+                    g.setColour(th.dim);
+                    g.drawText("no volume from this feed", volArea.reduced(4.f, 0.f), juce::Justification::centredRight);
+                }
+                return;
+            }
+        }
+        g.setColour(th.dim); g.setFont(11.f);
+        g.drawText("chart unavailable", area, juce::Justification::centred);
+    }
+    void resized() override {
+        auto r = getLocalBounds().reduced(14);
+        title.setBounds(r.removeFromTop(22)); asOfLabel.setBounds(r.removeFromTop(15)); r.removeFromTop(6);
+        auto rangeRow = r.removeFromTop(24);
+        btn24.setBounds(rangeRow.removeFromLeft(58)); rangeRow.removeFromLeft(6);
+        btn7.setBounds(rangeRow.removeFromLeft(58)); rangeRow.removeFromLeft(6);
+        btn30.setBounds(rangeRow.removeFromLeft(58));
+        noteLabel.setBounds(r.removeFromTop(15)); r.removeFromTop(4);
+        chartArea = r.removeFromTop(150); r.removeFromTop(8);
+        for (auto* l : rows) l->setBounds(r.removeFromTop(20));
+    }
+private:
+    MainComponent* owner;
+    tickerbar::SectionCellDef def;
+    std::string yahooSym;
+    std::vector<tickerbar::Candle> candles;
+    tickerbar::DetailRange range = tickerbar::DetailRange::H24;
+    juce::Label title, asOfLabel, noteLabel;
+    juce::OwnedArray<juce::Label> rows;
+    juce::TextButton btn24, btn7, btn30;
+    juce::Rectangle<int> chartArea;
+};
+
+// =====================================================================
 // Settings window content (MeterBar idiom: panels of small controls
 // writing straight into the shared state, firing callbacks).
 // =====================================================================
@@ -851,6 +1044,7 @@ public:
     tickerbar::TickerState* st = nullptr;
     std::function<void()> onChanged;          // visual/window settings changed
     std::function<void()> onWatchlistChanged; // watchlist or alerts changed
+    std::function<void()> onCustomStocksChanged; // v0.6.15: the Stocks section's user tickers changed
     SettingsContent() { setSize(700, 620); }
     void paint(juce::Graphics& g) override { g.fillAll(settingsPalette::base()); } // v0.3.0: the fixed pink-plum sheet
     void build() {
@@ -903,7 +1097,48 @@ public:
             combo("Section", {"Crypto (watchlist)", "ETFs & Indexes", "Top 100 S&P stocks", "Bonds", "Market Internals"},
                   owner->rotationSection(),
                   [&](int v){ owner->setRotationSection(v); });
-            note("What the main strip shows (also on the bar itself - the mode selector at the left of the strip - and in the bar's Menu > Rotation; all three switch the same setting). The non-crypto sections are keyless public data: index / ETF / stock quotes and bond ETFs from CNBC, Treasury yields from FRED (daily - each yield cell prints its observation date), sparklines from Yahoo daily closes. Market Internals figures are computed proxies from the Top 100 quotes, not official exchange breadth.");
+            note("What the main strip shows (also on the bar itself - the vertical mode rail on the bar's left side - and in the bar's Menu > Rotation; all three switch the same setting). The non-crypto sections are keyless public data: index / ETF / stock quotes, bond ETFs and the live Treasury yields from CNBC (yields polled every minute; each yield cell prints its quote time - CNBC carries no observation date), sparklines from Yahoo daily closes, and a click on a stock / ETF / index cell opens its Yahoo candlestick chart. Market Internals figures are computed proxies from the Top 100 quotes, not official exchange breadth.");
+        });
+        panel("Your tickers (Stocks section)", [&]{
+            for (auto& sym : st->customStocks) {
+                auto* l = add(new juce::Label({}, juce::String(sym)));
+                l->setFont(juce::Font(13.5f, juce::Font::bold)); l->setColour(juce::Label::textColourId, settingsPalette::text());
+                l->setBounds(24, y_, 120, 22);
+                auto* rm = add(new juce::TextButton("Remove"));
+                rm->setBounds(150, y_, 90, 22);
+                std::string s = sym;
+                rm->onClick = [this, s]{
+                    auto& cs = st->customStocks;
+                    cs.erase(std::remove(cs.begin(), cs.end(), s), cs.end());
+                    changedCustomStocks();
+                };
+                y_ += 26;
+            }
+            auto* ed = add(new juce::TextEditor());
+            ed->setColour(juce::TextEditor::backgroundColourId, settingsPalette::well());
+            ed->setColour(juce::TextEditor::textColourId, settingsPalette::text());
+            ed->setColour(juce::TextEditor::outlineColourId, settingsPalette::border());
+            ed->setBounds(24, y_, 130, 24);
+            auto* addBtn = add(new juce::TextButton("Add ticker"));
+            addBtn->setBounds(162, y_, 110, 24);
+            auto* err = add(new juce::Label({}, ""));
+            err->setFont(11.f); err->setColour(juce::Label::textColourId, juce::Colour(0xfffad927));
+            err->setBounds(284, y_, 400, 24);
+            addBtn->onClick = [this, ed, err]{
+                const std::string sym = tickerbar::normalizeStockTicker(ed->getText().toStdString());
+                if (sym.empty()) { err->setText("That doesn't read as a ticker symbol (letters, digits and dots, up to 12).", juce::dontSendNotification); return; }
+                if (std::find(st->customStocks.begin(), st->customStocks.end(), sym) != st->customStocks.end()) {
+                    err->setText(juce::String(sym) + " is already in your tickers.", juce::dontSendNotification); return;
+                }
+                if (st->customStocks.size() >= tickerbar::kMaxCustomStocks) {
+                    err->setText("Your list is full (" + juce::String((int)tickerbar::kMaxCustomStocks) + ") - remove one first.", juce::dontSendNotification); return;
+                }
+                st->customStocks.push_back(sym);
+                ed->clear(); err->setText("", juce::dontSendNotification);
+                changedCustomStocks();
+            };
+            y_ += 30;
+            note("Your own symbols for the Stocks section: they lead the rotation, ahead of the Top 100 (a symbol that is in both shows once, in your lead position). Quotes come from the same keyless CNBC batch as the Top 100. There is no symbol directory to check against, so a mistyped symbol is not blocked here - its cell just reads unavailable on the bar, and removing it here is the fix.");
         });
         panel("Title bar context", [&]{
             toggle("Show Fear & Greed in the title bar", st->showFearGreed, [&](bool b){ st->showFearGreed = b; });
@@ -1034,7 +1269,7 @@ public:
             note("Detail chart: candlesticks + volume with 24h / 7d / 30d ranges. Coinbase caps one candles request at 300: 24h/7d are hourly, 30d is daily. CoinGecko (HYPE) supplies hourly closes only - no OHLC, no volume, no 30d - and the chart note says so.");
             note("Polls every N seconds (Window panel). If the feed drops, cells grey out and keep the last real prices, marked STALE - never fake-fresh numbers.");
             note("Title bar: Fear & Greed index (alternative.me) and BTC dominance (CoinGecko) share one rotating cell in the title bar, poll separately every ~5 minutes and go stale on their own clock - they never block prices.");
-            note("Rotation sections: ETFs & Indexes, Top 100 S&P stocks, Bonds and Market Internals ride keyless public sources (CNBC quotes, FRED yields, Yahoo daily closes) on their own poller - a section outage never blocks prices. Market Internals are computed proxies from the Top 100 quotes, labelled as such - never official exchange breadth.");
+            note("Rotation sections: ETFs & Indexes, Top 100 S&P stocks (plus your own tickers), Bonds and Market Internals ride keyless public sources (CNBC quotes and live Treasury yields, Yahoo daily closes and drill-in candles) on their own poller - a section outage never blocks prices. Market Internals are computed proxies from the Top 100 quotes, labelled as such - never official exchange breadth.");
             note("Made with JUCE.");
         });
         setSize(700, y_ + 8);
@@ -1047,6 +1282,7 @@ private:
     template <typename T> T* add(T* c) { owned.emplace_back(c); addAndMakeVisible(c); return c; }
     void changed() { if (onChanged) onChanged(); }
     void changedWatchlist() { if (onWatchlistChanged) onWatchlistChanged(); }
+    void changedCustomStocks() { if (onCustomStocksChanged) onCustomStocksChanged(); }
     void panel(const juce::String& title, std::function<void()> body) {
         auto* hdr = add(new juce::Label({}, title)); hdr->setFont(juce::Font(15.f, juce::Font::bold));
         hdr->setColour(juce::Label::textColourId, settingsPalette::accent());
@@ -1207,7 +1443,7 @@ MainComponent::MainComponent() {
     // v0.3.0 item 1: the update indicator starts hidden and lights
     // only when a check finds a newer release (MeterBar's pattern).
     updateBtn_.setVisible(false);
-    updateBtn_.setLookAndFeel(&popButtonLnf_); // v0.6.8: text pop for the Update! TEXT button (not a glyph button)
+    updateBtn_.setLookAndFeel(&popButtonLnf_); // the Update! TEXT button's LNF (v0.6.8: text pop; v0.6.15: single draw — not a glyph button either way)
     updateBtn_.onClick = [this]{ uiClick(ClickSounds::Which::Pop);
         if (pendingRelease_.ok && pendingRelease_.newer) showUpdatePanel(pendingRelease_); };
     for (auto* b : { &linkBtn_, &settingsBtn_, &updateBtn_, &burgerBtn_ }) addAndMakeVisible(b);
@@ -1338,6 +1574,7 @@ MainComponent::MainComponent() {
     settingsWin_->content.st = &state;
     settingsWin_->content.onChanged = [this]{ settingsChanged(false); };
     settingsWin_->content.onWatchlistChanged = [this]{ settingsChanged(true); };
+    settingsWin_->content.onCustomStocksChanged = [this]{ customStocksChanged(); };
     settingsWin_->content.build();
 
     // v0.6.11: the two context readings live in the TITLE BAR now,
@@ -1349,10 +1586,10 @@ MainComponent::MainComponent() {
     titleCtx_ = std::make_unique<TitleContextCell>(this);
     addAndMakeVisible(titleCtx_.get());
 
-    // v0.6.14: the mode selector at the left end of the main strip —
-    // the rotation sections made visible on the bar itself.
-    // resized() decides its form (core modeSelectorFormH/V) and
-    // placement; the component reads/writes rotationSection()
+    // v0.6.14: the mode selector on the bar — the rotation sections
+    // made visible on the bar itself. v0.6.15: a vertical rail on
+    // the left side. resized() decides its form (core rail rules)
+    // and placement; the component reads/writes rotationSection()
     // through the same entry as Settings and the Menu.
     modeSel_ = std::make_unique<ModeSelector>(this);
     addAndMakeVisible(modeSel_.get());
@@ -1381,6 +1618,7 @@ MainComponent::MainComponent() {
     contextClient_.onUpdate = [this]{ refreshContext(); };
     contextClient_.startPolling();
     sectionClient_.onUpdate = [this]{ refreshSections(); };
+    sectionClient_.setCustomStocks(state.customStocks); // v0.6.15
     sectionClient_.startPolling();
     refreshContext();
     refreshSections();
@@ -1499,7 +1737,26 @@ void MainComponent::resized() {
     for (auto& sp : splitters_) sp->setVisible(false);
     for (auto& c : quoteCells_) c->setVisible(!crypto);
     if (trailSplit_) trailSplit_->setVisible(crypto && n > 0); // v0.3.2: nothing follows the coins any more
-    const bool rotWanted = titleCtx_ != nullptr && (state.showFearGreed || state.showBtcDominance);
+    // v0.6.15: the context rotator is CRYPTO context — core
+    // titleContextWanted hides it entirely in every other section
+    // (Jackson: it "needs to be swapped off when switching off of
+    // crypto"); in Crypto it still obeys the show* toggles.
+    const bool rotWanted = titleCtx_ != nullptr &&
+        tickerbar::titleContextWanted(rotationSection(), state.showFearGreed, state.showBtcDominance);
+    // v0.6.15: the mode RAIL claims the bar's left side before any
+    // strip layout runs — full content height on a horizontal bar
+    // when the core rail rule fits it (railPlaced); the cells-row
+    // fallback below covers the too-short case. On a vertical bar
+    // the rail is placed in its own block further down.
+    bool railPlaced = false;
+    if (!vertical_ && modeSel_ &&
+        tickerbar::modeRailFits(r.getHeight(), modeSel_->railNaturalHeight())) {
+        modeSel_->setForm(tickerbar::ModeSelectorForm::Expanded);
+        modeSel_->setVisible(true);
+        modeSel_->setBounds(r.removeFromLeft(modeSel_->railWidth()));
+        r.removeFromLeft(6);
+        railPlaced = true;
+    }
     if (!vertical_) {
         // ---- horizontal: 30 px toolbar strip across the top ----
         auto strip = r.removeFromTop(30);
@@ -1533,18 +1790,16 @@ void MainComponent::resized() {
         statusLabel_.setBounds(strip.withSizeKeepingCentre(strip.getWidth(), 14));
         r.removeFromTop(4);
         // ---- cells row ----
-        // v0.6.14: the mode selector claims the strip's LEFT end
-        // before any cell layout (fitted or marquee) runs — chrome,
-        // not content, so it never scrolls. The core room rule picks
-        // the form from the strip width: expanded while the strip
-        // keeps its working remainder, collapsed to the current-mode
-        // button below that, hidden when even that would crush the
-        // strip (Settings/Menu still switch).
-        if (modeSel_) {
-            const int natW = modeSel_->naturalWidth();
+        // v0.6.15: when the rail did not fit the bar's height, the
+        // selector falls back to v0.6.14's placement — the collapsed
+        // current-mode button at the strip's LEFT end, before any
+        // cell layout runs (chrome, not content, so it never
+        // scrolls), gated by the core fallback rule on the strip
+        // remainder; hidden below that (Settings/Menu still switch).
+        if (modeSel_ && !railPlaced) {
             const int colW = modeSel_->collapsedWidth();
-            const auto form = tickerbar::modeSelectorFormH(r.getWidth(), natW, colW);
-            const int ext = tickerbar::modeSelectorExtent(form, natW, colW);
+            const auto form = tickerbar::modeSelectorFallbackForm(r.getWidth(), colW);
+            const int ext = tickerbar::modeSelectorExtent(form, 0, colW);
             modeSel_->setForm(form);
             if (ext > 0) {
                 modeSel_->setVisible(true);
@@ -1570,7 +1825,11 @@ void MainComponent::resized() {
             auto items = stripItems();
             std::vector<int> ext;
             for (auto& it : items) ext.push_back(it.extent);
-            marqueeActive_ = tickerbar::marqueeNeeded(ext, 16, r.getWidth());
+            // v0.6.15: Bonds runs the marquee even when its cells
+            // fit (core sectionMarqueeForced — every other section
+            // still scrolls only on overflow).
+            marqueeActive_ = tickerbar::sectionMarqueeForced(rotationSection()) ||
+                             tickerbar::marqueeNeeded(ext, 16, r.getWidth());
             marqueeCycle_ = marqueeActive_ ? tickerbar::marqueeCycle(ext, 16) : 0;
             if (marqueeActive_) {
                 stripRect_ = r;
@@ -1659,22 +1918,32 @@ void MainComponent::resized() {
             titleCtx_->setBounds(r.getX(), r.getY(), tw, 24);
             r.removeFromTop(28);
         } else if (titleCtx_) { titleCtx_->setVisible(false); titlePlaced_ = false; }
-        // v0.6.14: the mode selector gets its own row under the
-        // cluster / title-rotator rows — full-width row, so the core
-        // room rule gates on the row's own width: expanded when all
-        // five segments fit the row, collapsed to the current-mode
-        // button on a narrow side bar, hidden below that.
+        // v0.6.15: on a vertical bar the rail is already a column —
+        // it takes a full-width block under the cluster / title
+        // rows at its natural height when the core rule leaves the
+        // cells their minimum room (modeRailFormV); below that the
+        // collapsed current-mode button (26 px row) shows while the
+        // row fits its width and a cell row still fits under it;
+        // hidden below that (Settings/Menu still switch).
         if (modeSel_) {
-            const int natW = modeSel_->naturalWidth();
-            const int colW = modeSel_->collapsedWidth();
-            const auto form = tickerbar::modeSelectorFormV(r.getWidth(), natW, colW);
-            const int ext = tickerbar::modeSelectorExtent(form, natW, colW);
-            modeSel_->setForm(form);
-            if (ext > 0) {
+            const int natH = modeSel_->railNaturalHeight();
+            if (tickerbar::modeRailFormV(r.getHeight(), natH) == tickerbar::ModeSelectorForm::Expanded) {
+                modeSel_->setForm(tickerbar::ModeSelectorForm::Expanded);
                 modeSel_->setVisible(true);
-                modeSel_->setBounds(r.getX(), r.getY(), ext, 26);
-                r.removeFromTop(30);
-            } else modeSel_->setVisible(false);
+                modeSel_->setBounds(r.getX(), r.getY(), r.getWidth(), natH);
+                r.removeFromTop(natH + 4);
+            } else {
+                const int colW = modeSel_->collapsedWidth();
+                const bool collapsedOk = colW <= r.getWidth() &&
+                    r.getHeight() >= 30 + tickerbar::kModeRailKeepVPx;
+                modeSel_->setForm(collapsedOk ? tickerbar::ModeSelectorForm::Collapsed
+                                              : tickerbar::ModeSelectorForm::Hidden);
+                if (collapsedOk) {
+                    modeSel_->setVisible(true);
+                    modeSel_->setBounds(r.getX(), r.getY(), colW, 26);
+                    r.removeFromTop(30);
+                } else modeSel_->setVisible(false);
+            }
         }
         // v0.4.0 overflow marquee, vertical form: when the stack's
         // natural height overflows the room, it scrolls in a loop
@@ -1684,7 +1953,8 @@ void MainComponent::resized() {
             std::vector<int> ext;
             for (auto& it : items) ext.push_back(it.extent);
             const int avail = r.getHeight() - ((anime && mascot_) ? 96 : 0);
-            marqueeActive_ = tickerbar::marqueeNeeded(ext, 16, avail);
+            marqueeActive_ = tickerbar::sectionMarqueeForced(rotationSection()) ||
+                             tickerbar::marqueeNeeded(ext, 16, avail);
             marqueeCycle_ = marqueeActive_ ? tickerbar::marqueeCycle(ext, 16) : 0;
             if (marqueeActive_) {
                 stripRect_ = { r.getX(), r.getY(), r.getWidth(), avail };
@@ -2041,20 +2311,29 @@ void MainComponent::setRotationSection(int idx) {
 
 void MainComponent::rebuildSectionCells() {
     quoteCells_.clear();
-    sectionDefs_ = tickerbar::sectionCells(rotationSection());
+    // v0.6.15: the Stocks section's defs come from the merged table
+    // (the user's tickers leading the Top 100); every other section
+    // uses the plain tables.
+    sectionDefs_ = rotationSection() == (int)tickerbar::RotationSection::Top100
+                       ? tickerbar::stocksSectionCells(state.customStocks)
+                       : tickerbar::sectionCells(rotationSection());
     builtSection_ = rotationSection();
+    int defIdx = 0;
     for (auto& def : sectionDefs_) {
         auto cell = std::make_unique<QuoteCell>(this);
         cell->title = juce::String(def.display);
+        cell->defIndex = defIdx++;
         juce::String tip = juce::String(def.label);
         switch (def.kind) {
             case tickerbar::SectionCellKind::Quote:
                 tip += (!def.cnbc.empty() && def.cnbc[0] == '.')
                            ? " - index reading, CNBC public quotes. Day change vs the previous close."
                            : " - CNBC public quotes. Day change vs the previous close.";
+                if (!tickerbar::drillInYahooSymbol(def).empty())
+                    tip += " Click for the candlestick chart (Yahoo).";
                 break;
             case tickerbar::SectionCellKind::Yield:
-                tip += " - FRED daily series; the cell prints the observation date (publication lags about a business day). Change is vs the previous observation, in basis points.";
+                tip += " - live U.S. Treasury yield (Tradeweb via CNBC, polled every minute). Change is vs the previous close, in basis points; the line under the value is the quote's own time - CNBC carries no observation date.";
                 break;
             default:
                 tip += " - computed from the Top 100 quote batch: a proxy, not an official exchange figure.";
@@ -2101,7 +2380,7 @@ void MainComponent::refreshSections() {
                 break;
             }
             case SectionCellKind::Yield: {
-                auto st = sectionClient_.yieldFor(def.fredId);
+                auto st = sectionClient_.yieldFor(def.display);
                 if (!st.value) { cell.setWaiting(st.attempted && st.failures >= 2 ? "unavailable" : "loading..."); break; }
                 const auto& y = *st.value;
                 juce::String pctText;
@@ -2111,9 +2390,14 @@ void MainComponent::refreshSections() {
                     pctText = (bp > 0 ? "+" : "") + juce::String(bp) + " bp";
                     pctCol = gainColour(bp >= 0);
                 }
-                const bool stale = feedStatus(true, st.ageSec, kFredStaleSec) != FeedStatus::Live;
+                // v0.6.15: freshness on the REAL cadence — the CNBC
+                // yield batch polls every minute, so the stale line
+                // is 3x that (kYieldStaleSec), not the FRED era's
+                // 90 minutes. The sub line is the quote's own time
+                // (no observation date exists on this feed).
+                const bool stale = feedStatus(true, st.ageSec, kYieldStaleSec) != FeedStatus::Live;
                 cell.setData(juce::String(y.valuePct, 2) + "%", pctText, pctCol,
-                             juce::String(y.date), y.history, theme_.accent2, stale);
+                             juce::String(y.stamp), {}, theme_.accent2, stale);
                 break;
             }
             case SectionCellKind::InternalsAdv:
@@ -2346,6 +2630,44 @@ void MainComponent::openDetail(const juce::String& symbol) {
                                                     client_.candlesFor(symbol.toStdString()), staleAll, asOf);
     juce::Rectangle<int> anchor = cell ? cell->getScreenBounds() : getScreenBounds();
     juce::CallOutBox::launchAsynchronously(std::move(detail), anchor, nullptr);
+}
+
+// v0.6.15: a section cell's drill-in. Only Quote-kind cells with a
+// Yahoo chart behind them open one (core drillInYahooSymbol);
+// Treasury yields and the computed Internals cells return quietly —
+// there is no chart to show and inventing one would be a fake. The
+// popup's header stats are the clicked cell's own formatted strings
+// plus its raw quote, snapshotted here, on the cell's own stale
+// clock (the same budgets refreshSections uses).
+void MainComponent::openSectionDetail(QuoteCell* cell) {
+    if (cell == nullptr || cell->defIndex < 0 || cell->defIndex >= (int)sectionDefs_.size()) return;
+    const auto& def = sectionDefs_[(size_t)cell->defIndex];
+    if (tickerbar::drillInYahooSymbol(def).empty()) return;
+    auto st = sectionClient_.quote(def.display);
+    const bool stale = st.value && tickerbar::feedStatus(true, st.ageSec,
+                               builtSection_ == (int)tickerbar::RotationSection::Top100
+                                   ? tickerbar::kTop100StaleSec : tickerbar::kSectionStaleSec) != tickerbar::FeedStatus::Live;
+    auto asOf = juce::Time::getCurrentTime().toString(false, true, true, false);
+    auto detail = std::make_unique<SectionDetailComponent>(this, def, cell->valueText, cell->pctText,
+                                                           cell->pctColour, st.value, stale, asOf);
+    juce::CallOutBox::launchAsynchronously(std::move(detail), cell->getScreenBounds(), nullptr);
+}
+
+// v0.6.15: Settings edited the Stocks section's user tickers —
+// push the list to the section poller (its custom batch + failure
+// state + sparkline sweep follow it), rebuild the Stocks cells if
+// they are on the bar, and persist. The settings sheet itself is
+// rebuilt deferred (the Remove/Add buttons live in it — the
+// watchlist path's rule).
+void MainComponent::customStocksChanged() {
+    sectionClient_.setCustomStocks(state.customStocks);
+    if (builtSection_ == (int)tickerbar::RotationSection::Top100) {
+        rebuildSectionCells();
+        refreshSections();
+    }
+    saveSettings();
+    rebuildSettingsDeferred();
+    resized();
 }
 
 // (The v0.2.0 on-bar Dock button — cycle the preferred edge and
@@ -3024,13 +3346,15 @@ void MainComponent::stepFx() {
         mascot_->bobPx = mascotAnim_.bobPx(now);
         mascot_->repaint();
     }
-    // v0.4.0: advance the overflow marquee (~45 px/s, news-ticker
-    // pace). Paused while a drag gesture owns the strip, so a cell
+    // v0.4.0: advance the overflow marquee (news-ticker pace —
+    // core kMarqueeSpeedPxPerSec: 45 px/s at v0.4.0, +10% to 49.5
+    // at Jackson's v0.6.15 ask; one constant for every section).
+    // Paused while a drag gesture owns the strip, so a cell
     // reorder or a divider drag never fights the scroll — v0.5.4:
     // divider drags are real marquee citizens now (the dividers
     // stay live in the scroll), so their hold joins the gate.
     if (marqueeActive_ && dragMode_ == 0 && !splitterDragHold_) {
-        marqueeOffset_ += 45.0 * (double)dt;
+        marqueeOffset_ += tickerbar::kMarqueeSpeedPxPerSec * (double)dt;
         if (marqueeCycle_ > 0 && marqueeOffset_ >= (double)marqueeCycle_) marqueeOffset_ -= (double)marqueeCycle_;
         positionStrip();
     }

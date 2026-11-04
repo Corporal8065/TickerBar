@@ -127,10 +127,14 @@ struct SectionQuote {
 // unknown); date is the OBSERVATION date (FRED publication lags about
 // a business day and the cell prints it, so the lag is never hidden);
 // history is the sparkline source, ascending.
+// A Treasury yield reading. v0.6.15: sourced from the CNBC batch's
+// live Tradeweb quotes — `stamp` is the quote's own timestamp
+// string (last_timedate), NOT an observation date; CNBC carries no
+// observation date and the cell must never print a fake one. The
+// FRED-era daily history sparkline went with the FRED route.
 struct YieldReading {
     double valuePct = 0.0;
     double prevPct = 0.0;
-    std::string date;
-    std::vector<double> history;
+    std::string stamp;
 };
 } // namespace tickerbar

@@ -15,13 +15,15 @@
 // away from their letters).
 //
 // Applied to the text TickerBar draws over its transparent /
-// visual background: the toolbar labels and the (text) Update!
-// button. (v0.6.10: the ticker cells and context cells no longer
-// use the pop — they draw single via drawSingle below, per
-// Jackson's 2026-11-03 cell-photo instruction.) Emoji / icon
-// GLYPH buttons (Link / Settings / Menu) are NOT routed through
-// here — Jackson: the emoji text was good as it was — and nothing
-// inside the opaque Settings sheet or the detail popup uses it.
+// visual background: the toolbar labels ONLY. (v0.6.10: the ticker
+// cells and context cells no longer use the pop — they draw single
+// via drawSingle below, per Jackson's 2026-11-03 cell-photo
+// instruction; v0.6.15: the (text) Update! button went single the
+// same way, at his word — PoppedButtonLookAndFeel now routes it
+// through drawSingle.) Emoji / icon GLYPH buttons (Link /
+// Settings / Menu) are NOT routed through here — Jackson: the
+// emoji text was good as it was — and nothing inside the opaque
+// Settings sheet or the detail popup uses it.
 namespace textpop {
 
 // Offset for a given font height: ~20% of the glyph, clamped so
@@ -86,8 +88,7 @@ inline void drawSingle(juce::Graphics& g, const juce::String& text, juce::Rectan
     drawSingle(g, text, r.toFloat(), j, colour);
 }
 
-// drawFittedText with the pop (toolbar labels / the Update!
-// button, whose stock LookAndFeel draws fitted text).
+// drawFittedText with the pop (the toolbar labels).
 inline void drawFitted(juce::Graphics& g, const juce::String& text, juce::Rectangle<int> r,
                        juce::Justification j, int maxLines, float minScale, juce::Colour colour) {
     const int off = juce::roundToInt(offsetFor(g.getCurrentFont().getHeight()));
