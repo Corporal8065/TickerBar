@@ -33,6 +33,7 @@
 class CoinCell;
 class QuoteCell;
 class TitleContextCell;
+class ModeSelector;
 class TickerSettingsWindow;
 class MascotView;
 class CellSplitter;
@@ -265,6 +266,11 @@ private:
     // v0.6.11: Fear & Greed + BTC dominance live HERE now — one
     // small rotating cell in the title bar (see TitleContextCell).
     std::unique_ptr<TitleContextCell> titleCtx_;
+    // v0.6.14: the rotation-section selector at the left end of the
+    // main strip (see ModeSelector) — the third surface over the
+    // same persisted rotationSection field (Settings combo + Menu
+    // submenu are the other two). resized() owns its form/placement.
+    std::unique_ptr<ModeSelector> modeSel_;
     // v0.6.11: the current section's quote cells + their defs
     // (empty in the Crypto section, where cells_ rules).
     std::vector<std::unique_ptr<QuoteCell>> quoteCells_;

@@ -53,6 +53,21 @@ inline const char* rotationSectionName(int idx) {
     }
 }
 
+// v0.6.14: the on-bar mode selector's labels — short forms of the
+// names above under the SAME indices (the persisted field's ABI),
+// sized for bar height, where "ETFs & Indexes" would eat the strip.
+// Full names ride the tooltips and the section menu.
+inline const char* rotationSectionShortName(int idx) {
+    switch (idx) {
+        case (int)RotationSection::Crypto:      return "Crypto";
+        case (int)RotationSection::EtfsIndexes: return "Indexes";
+        case (int)RotationSection::Top100:      return "Stocks";
+        case (int)RotationSection::Bonds:       return "Bonds";
+        case (int)RotationSection::Internals:   return "Internals";
+        default:                                return "";
+    }
+}
+
 // Poll clocks (seconds) and the matching staleness budgets. A section
 // reading goes STALE at 3x its poll clock without a successful fetch
 // (the family's feedStatus rule) — one section's failure never marks

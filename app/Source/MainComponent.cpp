@@ -471,6 +471,142 @@ private:
 };
 
 // =====================================================================
+// ModeSelector — v0.6.14: the rotation-section switcher ON the bar,
+// at the left end of the main strip (Jackson's ask — since v0.6.11
+// the sections lived only in Settings > Rotation and Menu >
+// Rotation, and he never found them there). Three surfaces, ONE
+// state: this selector, the Settings combo and the Menu submenu all
+// read/write MainComponent::rotationSection()/setRotationSection()
+// over the same persisted TickerState::rotationSection field — no
+// new settings keys. Short labels (core rotationSectionShortName);
+// full names ride the tooltips and the section menu. The form
+// (expanded segments / collapsed current-mode button / hidden) is
+// the core room rule's verdict, handed in by resized(); text draws
+// SINGLE (the v0.6.10 cell rule — this is a cell-like control, not
+// toolbar furniture). A press here is a click, never a window drag
+// (the toolbar buttons set the precedent).
+// =====================================================================
+class ModeSelector : public juce::Component, public juce::SettableTooltipClient {
+public:
+    MainComponent* owner = nullptr;
+    explicit ModeSelector(MainComponent* o) : owner(o) {
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    }
+    void setForm(tickerbar::ModeSelectorForm f) {
+        if (f == form_) return;
+        form_ = f; hoverSeg_ = -1; repaint();
+    }
+    tickerbar::ModeSelectorForm form() const { return form_; }
+    // Measured extents at the paint font — resized() feeds these to
+    // the core room rule (the titleContextExtent pattern).
+    int naturalWidth() const {
+        std::vector<int> lw;
+        for (int i = 0; i < tickerbar::kRotationSectionCount; ++i)
+            lw.push_back((int)std::ceil(segFont().getStringWidthFloat(
+                juce::String(tickerbar::rotationSectionShortName(i)))));
+        return tickerbar::modeSelectorNaturalWidth(lw);
+    }
+    int collapsedWidth() const {
+        const int lw = (int)std::ceil(segFont().getStringWidthFloat(
+            juce::String(tickerbar::rotationSectionShortName(owner->rotationSection()))));
+        return tickerbar::modeSelectorCollapsedWidth(lw);
+    }
+    void paint(juce::Graphics& g) override {
+        const auto& th = owner->theme();
+        const int active = owner->rotationSection();
+        auto b = getLocalBounds().toFloat().reduced(1.f);
+        g.setColour(th.border);
+        g.drawRoundedRectangle(b, 6.f, 1.f);
+        if (form_ == tickerbar::ModeSelectorForm::Expanded) {
+            const int w = getWidth();
+            for (int i = 0; i < tickerbar::kRotationSectionCount; ++i) {
+                const float x0 = (float)tickerbar::modeSegmentX0(i, w, tickerbar::kRotationSectionCount);
+                const float x1 = (float)tickerbar::modeSegmentX1(i, w, tickerbar::kRotationSectionCount);
+                juce::Rectangle<float> seg(x0 + 2.f, b.getY() + 2.f, x1 - x0 - 4.f, b.getHeight() - 4.f);
+                if (i == active) {
+                    g.setColour(th.accent.withAlpha(0.30f));
+                    g.fillRoundedRectangle(seg, 4.f);
+                    g.setColour(th.accent);
+                    g.fillRect(seg.getX() + 4.f, seg.getBottom() - 2.f, seg.getWidth() - 8.f, 2.f);
+                } else if (i == hoverSeg_) {
+                    g.setColour(th.text.withAlpha(0.08f));
+                    g.fillRoundedRectangle(seg, 4.f);
+                }
+                if (i > 0) {
+                    g.setColour(th.border.withAlpha(0.6f));
+                    g.drawVerticalLine((int)x0, b.getY() + 5.f, b.getBottom() - 5.f);
+                }
+                g.setFont(segFont());
+                textpop::drawSingle(g, juce::String(tickerbar::rotationSectionShortName(i)), seg,
+                                    juce::Justification::centred,
+                                    i == active ? th.text : th.dim);
+            }
+        } else { // Collapsed: current mode + dropdown triangle
+            const juce::String label(tickerbar::rotationSectionShortName(active));
+            auto r = b.reduced(4.f, 1.f);
+            auto triZone = r.removeFromRight((float)tickerbar::kModeSelectorChevronPx);
+            g.setFont(segFont());
+            textpop::drawSingle(g, label, r, juce::Justification::centred, th.text);
+            juce::Path tri;
+            const float cx = triZone.getCentreX(), cy = triZone.getCentreY();
+            tri.addTriangle(cx - 4.f, cy - 2.5f, cx + 4.f, cy - 2.5f, cx, cy + 3.5f);
+            g.setColour(th.dim);
+            g.fillPath(tri);
+        }
+    }
+    void mouseMove(const juce::MouseEvent& e) override {
+        juce::String tip;
+        int hov = -1;
+        if (form_ == tickerbar::ModeSelectorForm::Expanded) {
+            hov = tickerbar::modeSegmentAt(e.getPosition().x, getWidth(), tickerbar::kRotationSectionCount);
+            if (hov >= 0)
+                tip = juce::String(tickerbar::rotationSectionName(hov))
+                    + (hov == owner->rotationSection() ? " - current section" : " - click to switch");
+        } else if (form_ == tickerbar::ModeSelectorForm::Collapsed) {
+            tip = "Section: " + juce::String(tickerbar::rotationSectionName(owner->rotationSection()))
+                + " - click to choose";
+        }
+        if (tip != lastTip_) { lastTip_ = tip; setTooltip(tip); }
+        if (hov != hoverSeg_) { hoverSeg_ = hov; repaint(); }
+    }
+    void mouseExit(const juce::MouseEvent&) override {
+        if (hoverSeg_ != -1) { hoverSeg_ = -1; repaint(); }
+    }
+    void mouseUp(const juce::MouseEvent& e) override {
+        if (!e.mouseWasClicked()) return;
+        if (form_ == tickerbar::ModeSelectorForm::Expanded) {
+            const int i = tickerbar::modeSegmentAt(e.getPosition().x, getWidth(),
+                                                    tickerbar::kRotationSectionCount);
+            if (i >= 0 && i != owner->rotationSection()) {
+                owner->uiClick(ClickSounds::Which::Pop);
+                owner->setRotationSection(i);
+            }
+        } else if (form_ == tickerbar::ModeSelectorForm::Collapsed) {
+            owner->uiClick(ClickSounds::Which::Pop);
+            showSectionMenu();
+        }
+    }
+private:
+    tickerbar::ModeSelectorForm form_ = tickerbar::ModeSelectorForm::Expanded;
+    int hoverSeg_ = -1;
+    juce::String lastTip_;
+    static juce::Font segFont() { return juce::Font(12.0f, juce::Font::bold); }
+    // The collapsed form's menu: the five FULL names, the active one
+    // ticked — the same choice the Menu > Rotation submenu offers,
+    // landing in the same setRotationSection entry.
+    void showSectionMenu() {
+        juce::PopupMenu m;
+        for (int i = 0; i < tickerbar::kRotationSectionCount; ++i)
+            m.addItem(i + 1, tickerbar::rotationSectionName(i), true, i == owner->rotationSection());
+        m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+                        [this](int r) {
+                            if (r >= 1 && r <= tickerbar::kRotationSectionCount)
+                                owner->setRotationSection(r - 1);
+                        });
+    }
+};
+
+// =====================================================================
 // Detail view (CallOutBox content): candlestick chart + volume bars
 // with 24h / 7d / 30d timescale switching (v0.2.0 item c), full stats
 // and the alert editors for this symbol. The component polls the
@@ -767,7 +903,7 @@ public:
             combo("Section", {"Crypto (watchlist)", "ETFs & Indexes", "Top 100 S&P stocks", "Bonds", "Market Internals"},
                   owner->rotationSection(),
                   [&](int v){ owner->setRotationSection(v); });
-            note("What the main strip shows (also in the bar's Menu > Rotation). The non-crypto sections are keyless public data: index / ETF / stock quotes and bond ETFs from CNBC, Treasury yields from FRED (daily - each yield cell prints its observation date), sparklines from Yahoo daily closes. Market Internals figures are computed proxies from the Top 100 quotes, not official exchange breadth.");
+            note("What the main strip shows (also on the bar itself - the mode selector at the left of the strip - and in the bar's Menu > Rotation; all three switch the same setting). The non-crypto sections are keyless public data: index / ETF / stock quotes and bond ETFs from CNBC, Treasury yields from FRED (daily - each yield cell prints its observation date), sparklines from Yahoo daily closes. Market Internals figures are computed proxies from the Top 100 quotes, not official exchange breadth.");
         });
         panel("Title bar context", [&]{
             toggle("Show Fear & Greed in the title bar", st->showFearGreed, [&](bool b){ st->showFearGreed = b; });
@@ -1213,6 +1349,14 @@ MainComponent::MainComponent() {
     titleCtx_ = std::make_unique<TitleContextCell>(this);
     addAndMakeVisible(titleCtx_.get());
 
+    // v0.6.14: the mode selector at the left end of the main strip —
+    // the rotation sections made visible on the bar itself.
+    // resized() decides its form (core modeSelectorFormH/V) and
+    // placement; the component reads/writes rotationSection()
+    // through the same entry as Settings and the Menu.
+    modeSel_ = std::make_unique<ModeSelector>(this);
+    addAndMakeVisible(modeSel_.get());
+
     // v0.3.2: the trailing divider — right of the last coin cell
     // (v0.6.11: the standing case, now that no context cell can
     // follow the coins). Dragging it resizes the window along the
@@ -1389,6 +1533,26 @@ void MainComponent::resized() {
         statusLabel_.setBounds(strip.withSizeKeepingCentre(strip.getWidth(), 14));
         r.removeFromTop(4);
         // ---- cells row ----
+        // v0.6.14: the mode selector claims the strip's LEFT end
+        // before any cell layout (fitted or marquee) runs — chrome,
+        // not content, so it never scrolls. The core room rule picks
+        // the form from the strip width: expanded while the strip
+        // keeps its working remainder, collapsed to the current-mode
+        // button below that, hidden when even that would crush the
+        // strip (Settings/Menu still switch).
+        if (modeSel_) {
+            const int natW = modeSel_->naturalWidth();
+            const int colW = modeSel_->collapsedWidth();
+            const auto form = tickerbar::modeSelectorFormH(r.getWidth(), natW, colW);
+            const int ext = tickerbar::modeSelectorExtent(form, natW, colW);
+            modeSel_->setForm(form);
+            if (ext > 0) {
+                modeSel_->setVisible(true);
+                const auto selRect = r.removeFromLeft(ext);
+                modeSel_->setBounds(selRect.withSizeKeepingCentre(ext, std::min(30, selRect.getHeight())));
+                r.removeFromLeft(8);
+            } else modeSel_->setVisible(false);
+        }
         if (anime && mascot_) { mascot_->setBounds(r.removeFromRight(72)); r.removeFromRight(6); }
         // v0.4.0 overflow marquee: if the strip's natural content is
         // wider than the room left here, the whole strip scrolls
@@ -1495,6 +1659,23 @@ void MainComponent::resized() {
             titleCtx_->setBounds(r.getX(), r.getY(), tw, 24);
             r.removeFromTop(28);
         } else if (titleCtx_) { titleCtx_->setVisible(false); titlePlaced_ = false; }
+        // v0.6.14: the mode selector gets its own row under the
+        // cluster / title-rotator rows — full-width row, so the core
+        // room rule gates on the row's own width: expanded when all
+        // five segments fit the row, collapsed to the current-mode
+        // button on a narrow side bar, hidden below that.
+        if (modeSel_) {
+            const int natW = modeSel_->naturalWidth();
+            const int colW = modeSel_->collapsedWidth();
+            const auto form = tickerbar::modeSelectorFormV(r.getWidth(), natW, colW);
+            const int ext = tickerbar::modeSelectorExtent(form, natW, colW);
+            modeSel_->setForm(form);
+            if (ext > 0) {
+                modeSel_->setVisible(true);
+                modeSel_->setBounds(r.getX(), r.getY(), ext, 26);
+                r.removeFromTop(30);
+            } else modeSel_->setVisible(false);
+        }
         // v0.4.0 overflow marquee, vertical form: when the stack's
         // natural height overflows the room, it scrolls in a loop
         // (positionStrip) and the fitted stack below is skipped.
@@ -1838,10 +2019,14 @@ void MainComponent::refreshContext() {
 }
 
 // --- v0.6.11 rotation sections --------------------------------------
-// The switcher's single entry (Settings combo + Menu > Rotation):
-// persist, rebuild the section's cells when the section changed,
-// reflow. A preset load lands here too, via settingsChanged's
-// section guard below.
+// The switcher's single entry (Settings combo + Menu > Rotation —
+// and since v0.6.14 the on-bar mode selector): persist, rebuild the
+// section's cells when the section changed, reflow. Every surface
+// reads the same state.rotationSection, so a change made on any one
+// shows on the others (the selector paints rotationSection() and is
+// repainted below; the combo and the submenu read it when built).
+// A preset load lands here too, via settingsChanged's section
+// guard below.
 void MainComponent::setRotationSection(int idx) {
     state.rotationSection = juce::jlimit(0, tickerbar::kRotationSectionCount - 1, idx);
     if (state.rotationSection != builtSection_) {
@@ -1850,6 +2035,7 @@ void MainComponent::setRotationSection(int idx) {
     }
     saveSettings();
     resized();
+    if (modeSel_) modeSel_->repaint(); // v0.6.14: the active mark follows at once
     repaint();
 }
 

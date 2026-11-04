@@ -302,6 +302,64 @@ inline int marqueeSplitterRel(int itemRel, int itemExtent, int gap, int splitter
     return itemRel + itemExtent + (gap - splitterExtent) / 2;
 }
 
+// ------------------------------------------------------------------
+// MODE SELECTOR (v0.6.14) — Jackson asked for the rotation-section
+// switcher ON the bar, at the left end of the main strip (since
+// v0.6.11 it lived only in Settings and the burger Menu, and he
+// never found it there). The selector is chrome, not content: it
+// claims the strip's left end BEFORE the cells/marquee layout runs,
+// and its form follows the room rules below so it can never crush
+// the strip it sits in.
+//   Expanded  — all five segments in a row, the active one marked.
+//   Collapsed — one button showing the current mode; a click opens
+//               the section menu (full names, the active one ticked).
+//   Hidden    — no room even for the button; Settings and the Menu
+//               still switch (the same persisted field throughout).
+// Horizontal, the selector eats strip width, so the forms are gated
+// on the REMAINDER the strip keeps after it. Vertical, the selector
+// is its own full-width row under the toolbar cluster, so the gate
+// is that row's own width. The app measures the short labels at its
+// paint font and passes the widths in (the titleContextExtent
+// pattern); the arithmetic is pinned here.
+enum class ModeSelectorForm { Hidden, Collapsed, Expanded };
+inline constexpr int kModeSelectorSegPadPx = 7;     // horizontal padding inside one segment (and the collapsed button)
+inline constexpr int kModeSelectorChevronPx = 12;   // collapsed form: room for the dropdown triangle
+inline constexpr int kModeSelectorKeepPx = 300;     // strip remainder the EXPANDED form must leave behind
+inline constexpr int kModeSelectorKeepMinPx = 150;  // ...and the COLLAPSED form (about one minimum cell + dividers)
+
+inline int modeSelectorNaturalWidth(const std::vector<int>& labelWidths) {
+    int w = 0;
+    for (int lw : labelWidths) w += std::max(0, lw) + 2 * kModeSelectorSegPadPx;
+    return w;
+}
+inline int modeSelectorCollapsedWidth(int currentLabelW) {
+    return std::max(0, currentLabelW) + 2 * kModeSelectorSegPadPx + kModeSelectorChevronPx;
+}
+inline ModeSelectorForm modeSelectorFormH(int stripW, int naturalW, int collapsedW) {
+    if (naturalW > 0 && stripW - naturalW >= kModeSelectorKeepPx) return ModeSelectorForm::Expanded;
+    if (collapsedW > 0 && stripW - collapsedW >= kModeSelectorKeepMinPx) return ModeSelectorForm::Collapsed;
+    return ModeSelectorForm::Hidden;
+}
+inline ModeSelectorForm modeSelectorFormV(int rowW, int naturalW, int collapsedW) {
+    if (naturalW > 0 && naturalW <= rowW) return ModeSelectorForm::Expanded;
+    if (collapsedW > 0 && collapsedW <= rowW) return ModeSelectorForm::Collapsed;
+    return ModeSelectorForm::Hidden;
+}
+inline int modeSelectorExtent(ModeSelectorForm f, int naturalW, int collapsedW) {
+    return f == ModeSelectorForm::Expanded ? naturalW
+         : f == ModeSelectorForm::Collapsed ? collapsedW : 0;
+}
+// The expanded form's segments divide the granted extent equally.
+// Segment i spans [modeSegmentX0, modeSegmentX1); the hit test maps
+// an x back to its segment (-1 outside).
+inline int modeSegmentX0(int i, int extent, int count) { return count > 0 ? i * extent / count : 0; }
+inline int modeSegmentX1(int i, int extent, int count) { return count > 0 ? (i + 1) * extent / count : 0; }
+inline int modeSegmentAt(int x, int extent, int count) {
+    if (count <= 0 || extent <= 0 || x < 0 || x >= extent) return -1;
+    const int i = x * count / extent;
+    return i < count ? i : count - 1;
+}
+
 // Where a dragged cell would land: the count of sibling centres the
 // pointer has passed = the insertion slot (0..n) in the sibling list
 // WITHOUT the dragged cell.

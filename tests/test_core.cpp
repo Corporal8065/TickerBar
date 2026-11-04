@@ -1632,6 +1632,67 @@ int main() {
             resetAllSettingsToDefaults(s);
             CHECK(s.rotationSection == 0);
         }
+
+        // v0.6.14: the on-bar mode selector. Short labels ride the
+        // SAME indices as the full names (one persisted field, three
+        // surfaces: bar selector, Settings combo, Menu submenu).
+        CHECK(std::string(rotationSectionShortName(0)) == "Crypto");
+        CHECK(std::string(rotationSectionShortName(1)) == "Indexes");
+        CHECK(std::string(rotationSectionShortName(2)) == "Stocks");
+        CHECK(std::string(rotationSectionShortName(3)) == "Bonds");
+        CHECK(std::string(rotationSectionShortName(4)) == "Internals");
+        CHECK(std::string(rotationSectionShortName(5)).empty());
+        for (int i = 0; i < kRotationSectionCount; ++i)
+            CHECK(!std::string(rotationSectionShortName(i)).empty());
+        // Width arithmetic over measured labels.
+        {
+            const std::vector<int> lw = { 30, 40, 32, 30, 44 };
+            CHECK(modeSelectorNaturalWidth(lw) == 176 + 5 * 2 * kModeSelectorSegPadPx);
+            CHECK(modeSelectorNaturalWidth({}) == 0);
+            CHECK(modeSelectorNaturalWidth({ -5, 10 }) == 10 + 2 * 2 * kModeSelectorSegPadPx); // negatives clamp
+            CHECK(modeSelectorCollapsedWidth(44) == 44 + 2 * kModeSelectorSegPadPx + kModeSelectorChevronPx);
+            CHECK(modeSelectorCollapsedWidth(0) == 2 * kModeSelectorSegPadPx + kModeSelectorChevronPx);
+        }
+        // Horizontal room rule: expanded only while the strip keeps
+        // its working remainder, collapsed while it keeps the
+        // minimum, hidden below that — it never crushes the strip.
+        {
+            const int nat = 246, col = 70;
+            CHECK(modeSelectorFormH(nat + kModeSelectorKeepPx, nat, col) == ModeSelectorForm::Expanded);
+            CHECK(modeSelectorFormH(nat + kModeSelectorKeepPx - 1, nat, col) == ModeSelectorForm::Collapsed);
+            CHECK(modeSelectorFormH(col + kModeSelectorKeepMinPx, nat, col) == ModeSelectorForm::Collapsed);
+            CHECK(modeSelectorFormH(col + kModeSelectorKeepMinPx - 1, nat, col) == ModeSelectorForm::Hidden);
+            CHECK(modeSelectorFormH(0, nat, col) == ModeSelectorForm::Hidden);
+            CHECK(modeSelectorExtent(ModeSelectorForm::Expanded, nat, col) == nat);
+            CHECK(modeSelectorExtent(ModeSelectorForm::Collapsed, nat, col) == col);
+            CHECK(modeSelectorExtent(ModeSelectorForm::Hidden, nat, col) == 0);
+        }
+        // Vertical room rule: the selector is its own row, so the
+        // gate is the row's own width.
+        {
+            const int nat = 246, col = 70;
+            CHECK(modeSelectorFormV(nat, nat, col) == ModeSelectorForm::Expanded);
+            CHECK(modeSelectorFormV(nat - 1, nat, col) == ModeSelectorForm::Collapsed);
+            CHECK(modeSelectorFormV(col, nat, col) == ModeSelectorForm::Collapsed);
+            CHECK(modeSelectorFormV(col - 1, nat, col) == ModeSelectorForm::Hidden);
+            CHECK(modeSelectorFormV(0, nat, col) == ModeSelectorForm::Hidden);
+        }
+        // Segment geometry: equal division of the granted extent;
+        // boundary pixels land in the right segment; outside is none.
+        {
+            CHECK(modeSegmentAt(0, 250, 5) == 0);
+            CHECK(modeSegmentAt(49, 250, 5) == 0);
+            CHECK(modeSegmentAt(50, 250, 5) == 1);
+            CHECK(modeSegmentAt(249, 250, 5) == 4);
+            CHECK(modeSegmentAt(250, 250, 5) == -1);
+            CHECK(modeSegmentAt(-1, 250, 5) == -1);
+            CHECK(modeSegmentAt(10, 0, 5) == -1);
+            CHECK(modeSegmentAt(10, 250, 0) == -1);
+            CHECK(modeSegmentX0(2, 250, 5) == 100 && modeSegmentX1(2, 250, 5) == 150);
+            CHECK(modeSegmentX0(0, 250, 5) == 0 && modeSegmentX1(4, 250, 5) == 250);
+            for (int i = 0; i < 5; ++i)
+                CHECK(modeSegmentAt((modeSegmentX0(i, 251, 5) + modeSegmentX1(i, 251, 5)) / 2, 251, 5) == i);
+        }
     }
 
     // ================= v0.6.12: Hyperliquid drill-in candles =================
