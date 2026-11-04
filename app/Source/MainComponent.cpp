@@ -342,9 +342,10 @@ public:
 // Greed and BTC dominance merged into ONE small cell living in the
 // title bar between the left cluster and the top-right icons (they
 // left the main row — Jackson's ask). The two readings rotate on
-// the core dwell (kTitleContextRotateSec, driven by the owner's
-// 4 Hz timer); when only one reading is enabled in Settings the
-// cell is static on it. Same stale honesty as every cell: dimmed
+// the core dwell (kTitleContextRotateSec); the face + dwell are
+// owned by the core TitleRotator state machine (v0.6.12 — this
+// widget only renders the face it is handed), and when only one
+// reading is enabled in Settings the cell is static on it. Same stale honesty as every cell: dimmed
 // at 0.55 alpha with a STALE tag on the context clock. On the
 // Fear & Greed face a click still opens the index page (the
 // v0.2.0 click-through behaviour, preserved). Single-draw text
@@ -362,13 +363,16 @@ public:
     }
     void setIncluded(bool fngIn, bool domIn) {
         fngIn_ = fngIn; domIn_ = domIn;
-        if (showingFng_ && !fngIn_ && domIn_) showingFng_ = false;
-        if (!showingFng_ && !domIn_ && fngIn_) showingFng_ = true;
         syncFaceChrome(); repaint();
     }
-    void flip() {
-        if (!fngIn_ || !domIn_) return;
-        showingFng_ = !showingFng_;
+    // v0.6.12: the FACE is owned by the core TitleRotator now (the
+    // owner pushes it here on every context refresh and on every
+    // flip). v0.6.11 kept the face in this widget, the dwell in the
+    // owner and the inclusion flags in both — the split is what let
+    // the face freeze in the field. This widget only renders.
+    void setFace(bool fng) {
+        if (showingFng_ == fng) return;
+        showingFng_ = fng;
         syncFaceChrome(); repaint();
     }
     bool showingFng() const { return showingFng_; }
@@ -441,9 +445,13 @@ private:
 // for a fetch when the cache is empty (the client throttles).
 // Feed honesty: Coinbase ranges are real OHLCV (24h/7d hourly, 30d
 // daily — Coinbase caps one candles request at 300). CoinGecko
-// (HYPE) supplies hourly closes only: candles are flat ticks, there
-// are no volume bars, and 30d does not exist — the note line under
-// the range buttons says so in words, from PriceClient::detailNote.
+// supplies hourly closes only (flat ticks, no volume bars, no 30d),
+// so since v0.6.12 the drill-in candles for CoinGecko-routed
+// symbols (HYPE) come from Hyperliquid's candleSnapshot first —
+// full OHLC + volume at every range — with CoinGecko as the
+// fallback. The note line under the range buttons says which feed
+// drew the chart, in words, from PriceClient::detailNote +
+// detailSourceName.
 // =====================================================================
 class DetailComponent : public juce::Component, private juce::Timer {
 public:
@@ -538,6 +546,18 @@ public:
                      tickerbar::sourceForSymbol(symbol.toStdString()) == tickerbar::PriceSource::Coinbase)
                 note = "Hourly candles (168).";
         }
+        // v0.6.12: the chart names the feed that actually DREW it
+        // (PriceClient::detailSourceName — the feed that supplied
+        // these cached candles, which for a CoinGecko-priced symbol
+        // is Hyperliquid when the candleSnapshot route served the
+        // range and CoinGecko after a fallback). Notes that already
+        // open with the feed's name ("Hyperliquid candles: ...",
+        // "CoinGecko supplies ...") stand as they are; anything else
+        // gets the source prefixed so no chart is ever unlabelled.
+        const std::string srcName = owner->client().detailSourceName(symbol.toStdString(), range);
+        if (!srcName.empty() && !candles.empty() && !note.startsWith(juce::String(srcName)))
+            note = "Candles: " + juce::String(srcName) + (note.isEmpty() || note == "loading..."
+                        ? juce::String() : ". " + note);
         if (note != noteLabel.getText()) noteLabel.setText(note, juce::dontSendNotification);
         repaint();
     }
@@ -1193,10 +1213,11 @@ void MainComponent::resized() {
             const int ext = tickerbar::titleContextExtent(strip.getWidth());
             if (ext > 0) {
                 titleCtx_->setVisible(true);
+                titlePlaced_ = true; // v0.6.12: the rotator's placed gate is this verdict
                 titleCtx_->setBounds(strip.removeFromRight(ext).withSizeKeepingCentre(ext, 26));
                 strip.removeFromRight(6);
-            } else titleCtx_->setVisible(false);
-        } else if (titleCtx_) titleCtx_->setVisible(false);
+            } else { titleCtx_->setVisible(false); titlePlaced_ = false; }
+        } else if (titleCtx_) { titleCtx_->setVisible(false); titlePlaced_ = false; }
         statusLabel_.setBounds(strip.withSizeKeepingCentre(strip.getWidth(), 14));
         r.removeFromTop(4);
         // ---- cells row ----
@@ -1301,10 +1322,11 @@ void MainComponent::resized() {
         // and it hides rather than crushing the row).
         if (rotWanted && r.getWidth() >= tickerbar::kTitleContextMinPx) {
             titleCtx_->setVisible(true);
+            titlePlaced_ = true; // v0.6.12: as above
             const int tw = std::min(r.getWidth(), tickerbar::kTitleContextMaxPx);
             titleCtx_->setBounds(r.getX(), r.getY(), tw, 24);
             r.removeFromTop(28);
-        } else if (titleCtx_) titleCtx_->setVisible(false);
+        } else if (titleCtx_) { titleCtx_->setVisible(false); titlePlaced_ = false; }
         // v0.4.0 overflow marquee, vertical form: when the stack's
         // natural height overflows the room, it scrolls in a loop
         // (positionStrip) and the fitted stack below is skipped.
@@ -1623,6 +1645,11 @@ void MainComponent::refreshData() {
 void MainComponent::refreshContext() {
     if (!titleCtx_) return;
     titleCtx_->setIncluded(state.showFearGreed, state.showBtcDominance);
+    // v0.6.12: the rendered face always comes from the core
+    // rotator — pushed here on every refresh (4 Hz timer + every
+    // context poll) so the widget can never sit on a stale face.
+    titleRotator_.setIncluded(state.showFearGreed, state.showBtcDominance);
+    titleCtx_->setFace(titleRotator_.showingFng());
     const auto fg = contextClient_.fng();
     if (fg.value) {
         const int band = tickerbar::fngBandIndex(fg.value->value);
@@ -1790,17 +1817,28 @@ void MainComponent::timerCallback() {
     refreshStatus();
     refreshContext(); // age-based stale transitions need no new data to show
     refreshSections(); // v0.6.11: same for the section cells
-    // v0.6.11: the title rotator's dwell — flip faces on the core
-    // rotation pace while both readings are enabled and the cell
-    // is actually on screen; the accumulator resets whenever the
-    // rotator hides, so a reappearing cell starts a full dwell.
-    if (titleCtx_ && titleCtx_->isVisible() && state.showFearGreed && state.showBtcDominance) {
-        titleFlipClock_ += 0.25;
-        if (titleFlipClock_ >= tickerbar::kTitleContextRotateSec) {
-            titleFlipClock_ = 0.0;
-            titleCtx_->flip();
-        }
-    } else titleFlipClock_ = 0.0;
+    // v0.6.12: the title rotator's dwell runs through the core
+    // TitleRotator, fed REAL elapsed time (clamped to 1 s so a
+    // stalled message thread cannot fast-forward faces when it
+    // recovers). The gates are the two facts that matter — both
+    // readings included, and layout placed the cell (titlePlaced_,
+    // resized()'s own verdict) — instead of v0.6.11's conjunction
+    // of separately-maintained flags (owner accumulator + the
+    // widget's re-read visibility flag + the widget's duplicate
+    // inclusion flags), where any one false flag froze the face
+    // forever: Jackson's v0.6.11 field report. refreshContext()
+    // (above, every tick) already pushed the machine's face into
+    // the cell; a flip here pushes the new face at once.
+    {
+        const juce::int64 nowMs = juce::Time::currentTimeMillis();
+        double dtSec = titleLastTickMs_ > 0 ? (nowMs - titleLastTickMs_) / 1000.0 : 0.25;
+        titleLastTickMs_ = nowMs;
+        dtSec = juce::jlimit(0.0, 1.0, dtSec);
+        titleRotator_.setIncluded(state.showFearGreed, state.showBtcDominance);
+        if (titleRotator_.advance(dtSec, state.showFearGreed && state.showBtcDominance,
+                                  titlePlaced_ && titleCtx_ != nullptr))
+            titleCtx_->setFace(titleRotator_.showingFng());
+    }
     // v0.2.0: NO screen-space work here. The v0.1 sync ran from this
     // 4 Hz timer and re-asserted the AppBar several times a second —
     // half of the flicker Jackson field-reported (MeterBar v0.18's

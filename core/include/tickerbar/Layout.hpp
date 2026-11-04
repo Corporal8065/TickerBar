@@ -202,6 +202,55 @@ inline int titleContextExtent(int remainingPx) {
                                             : std::min(remainingPx, kTitleContextMaxPx);
 }
 
+// The rotator's face + dwell state machine (v0.6.12). v0.6.11 split
+// this state three ways — the face lived in the title cell widget,
+// the dwell accumulator lived in the owner, and the advance was
+// gated on a conjunction of separately-maintained flags (the
+// widget's visibility flag re-read every timer tick, two settings
+// flags, and the widget's own duplicate inclusion flags) — so any
+// single false conjunct froze the face forever with no visible
+// error, which is what Jackson field-reported: the cell sat on one
+// face and never rotated. The machine below is the single source of
+// truth: the app feeds it elapsed time + the two facts that matter
+// (are both readings included? did layout place the cell?) and
+// renders whatever face it says. Inclusion changes keep the face
+// valid (a face that stops being included yields to the other);
+// losing either gate zeroes the dwell, so a reappearing cell always
+// starts a full dwell — the v0.6.11 intent, now in one place and
+// covered by core tests that advance the clock and assert flips.
+class TitleRotator {
+public:
+    // Record which readings are included. If the face on show is no
+    // longer included (and the other is), the other takes over at
+    // once; with fewer than two readings there is nothing to rotate,
+    // so the dwell restarts.
+    void setIncluded(bool fngIn, bool domIn) {
+        if (showingFng_ && !fngIn && domIn) showingFng_ = false;
+        else if (!showingFng_ && !domIn && fngIn) showingFng_ = true;
+        if (!fngIn || !domIn) dwell_ = 0.0;
+    }
+    // Advance the dwell by dtSec of real elapsed time. Flips the
+    // face and returns true when a full dwell elapses with both
+    // readings included and the cell placed on screen; otherwise
+    // the dwell holds at zero (hidden or single-reading cells never
+    // accumulate time toward a flip).
+    bool advance(double dtSec, bool bothIncluded, bool placed) {
+        if (!bothIncluded || !placed) { dwell_ = 0.0; return false; }
+        dwell_ += dtSec;
+        if (dwell_ >= kTitleContextRotateSec) {
+            dwell_ = 0.0;
+            showingFng_ = !showingFng_;
+            return true;
+        }
+        return false;
+    }
+    bool showingFng() const { return showingFng_; }
+    double dwell() const { return dwell_; }
+private:
+    bool showingFng_ = true; // Fear & Greed is the opening face
+    double dwell_ = 0.0;
+};
+
 // ------------------------------------------------------------------
 // OVERFLOW MARQUEE (v0.4.0, Jackson's ask): when the strip's natural
 // content is wider than the bar itself, the strip scrolls left in a

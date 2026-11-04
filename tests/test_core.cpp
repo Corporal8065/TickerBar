@@ -11,6 +11,7 @@
 #include <tickerbar/Json.hpp>
 #include <tickerbar/Model.hpp>
 #include <tickerbar/MarketParse.hpp>
+#include <tickerbar/HyperliquidParse.hpp> // v0.6.12: drill-in candles for CoinGecko-routed symbols
 #include <tickerbar/ContextParse.hpp>
 #include <tickerbar/Format.hpp>
 #include <tickerbar/Alerts.hpp>
@@ -1564,6 +1565,57 @@ int main() {
         CHECK(titleContextExtent(200) == 200);
         CHECK(titleContextExtent(1000) == kTitleContextMaxPx);
 
+        // v0.6.12: the rotator state machine. v0.6.11 had NO test of
+        // the flip itself (only the room rule above) and the face
+        // froze in the field — these advance the dwell clock in
+        // timer-sized steps and assert the visible face changes.
+        {
+            TitleRotator rot;
+            rot.setIncluded(true, true);
+            CHECK(rot.showingFng()); // Fear & Greed is the opening face
+            int flips = 0;
+            for (int i = 0; i < 23; ++i) flips += rot.advance(0.25, true, true) ? 1 : 0;
+            CHECK(flips == 0 && rot.showingFng()); // 5.75 s: still dwelling
+            CHECK(rot.advance(0.25, true, true));  // 6.0 s: the flip fires
+            CHECK(!rot.showingFng());              // ...onto BTC dominance
+            for (int i = 0; i < 23; ++i) rot.advance(0.25, true, true);
+            CHECK(rot.advance(0.25, true, true));  // the next dwell flips back
+            CHECK(rot.showingFng());
+        }
+        // A hidden (unplaced) cell never accumulates dwell, and a
+        // reappearing cell starts a FULL dwell — the v0.6.11 intent,
+        // now pinned: partial dwell banked before a hide is gone.
+        {
+            TitleRotator rot;
+            rot.setIncluded(true, true);
+            for (int i = 0; i < 20; ++i) rot.advance(0.25, true, true); // 5 s banked
+            CHECK(!rot.advance(0.25, true, false));                     // hidden: no flip...
+            CHECK(near(rot.dwell(), 0.0));                              // ...and the bank is zeroed
+            for (int i = 0; i < 23; ++i) CHECK(!rot.advance(0.25, true, true));
+            CHECK(rot.advance(0.25, true, true)); // only the full new dwell flips
+        }
+        // One reading excluded: the face is static, and a shown face
+        // that becomes excluded yields to the other at once — the
+        // exact stranded-on-dominance shape Jackson field-reported
+        // (cell sitting on BTC DOMINANCE) cannot persist once both
+        // readings are included again: rotation simply resumes.
+        {
+            TitleRotator rot;
+            rot.setIncluded(true, true);
+            for (int i = 0; i < 24; ++i) rot.advance(0.25, true, true);
+            CHECK(!rot.showingFng());      // sitting on dominance
+            rot.setIncluded(true, false);  // dominance excluded...
+            CHECK(rot.showingFng());       // ...F&G takes over at once
+            for (int i = 0; i < 100; ++i) CHECK(!rot.advance(0.25, false, true));
+            CHECK(rot.showingFng());       // static while only one reading is in
+            rot.setIncluded(false, true);  // now F&G excluded instead
+            CHECK(!rot.showingFng());      // dominance takes over at once
+            rot.setIncluded(true, true);   // both back: rotation resumes
+            for (int i = 0; i < 23; ++i) rot.advance(0.25, true, true);
+            CHECK(rot.advance(0.25, true, true));
+            CHECK(rot.showingFng());
+        }
+
         // Index levels print grouped, 2dp, with no currency sign.
         CHECK(formatIndexValue(7565.73) == "7,565.73");
         CHECK(formatIndexValue(20.8) == "20.80");
@@ -1578,6 +1630,87 @@ int main() {
             CHECK(s.rotationSection == 0);
         }
     }
+
+    // ================= v0.6.12: Hyperliquid drill-in candles =================
+    // Fixtures: hl_candles_hype_1h.json is a REAL candleSnapshot
+    // response captured 2026-11-03 via POST
+    // https://api.hyperliquid.xyz/info (HYPE, 1h, ~25h window, 26
+    // candles); hl_candles_unlisted.json is the response BODY
+    // actually observed for an unlisted coin (HTTP 500, body
+    // literally "null"). The rest are hand-broken variants.
+    {
+        auto hl = parseHyperliquidCandles(readFile("hl_candles_hype_1h.json"), "HYPE");
+        CHECK(hl.has_value());
+        CHECK(hl && hl->size() == 26);                        // 25h window, both ends inclusive
+        CHECK(hl && hl->front().tOpenMs == 1793653200000LL);  // first candle at capture
+        CHECK(hl && near(hl->front().open, 83.135, 1e-6));
+        CHECK(hl && near(hl->front().close, 84.516, 1e-6));
+        CHECK(hl && near(hl->front().high, 84.672, 1e-6));
+        CHECK(hl && near(hl->front().low, 83.114, 1e-6));
+        CHECK(hl && near(hl->front().volume, 387291.45, 1e-6)); // "v": COIN units, as Model::Candle::volume
+        CHECK(hl && near(hl->back().close, 85.981, 1e-6));      // newest captured close is last
+        bool hlAscending = true, hlVol = true, hlSane = true;
+        if (hl) for (size_t i = 0; i < hl->size(); ++i) {
+            if (i && (*hl)[i].tOpenMs <= (*hl)[i - 1].tOpenMs) hlAscending = false;
+            if (!((*hl)[i].volume > 0.0)) hlVol = false;         // real volume, unlike CoinGecko closes
+            auto& c = (*hl)[i];
+            if (!(c.high >= c.low && c.high >= c.open && c.high >= c.close &&
+                  c.low <= c.open && c.low <= c.close)) hlSane = false;
+        }
+        CHECK(hlAscending);                                   // API sends oldest first; parser keeps it so
+        CHECK(hlVol);
+        CHECK(hlSane);
+        auto hlRange = hl ? candleRange(*hl) : std::nullopt;
+        CHECK(hlRange && hlRange->hasVolume);                 // chart MUST draw volume bars for this feed
+        CHECK(hlRange && hlRange->maxVolume >= 387291.45);
+        CHECK(hl && changePct1h(*hl).has_value());
+        // The coin label is checked: the same payload is not BTC's chart.
+        CHECK(!parseHyperliquidCandles(readFile("hl_candles_hype_1h.json"), "BTC").has_value());
+        CHECK(parseHyperliquidCandles(readFile("hl_candles_hype_1h.json"), "hype").has_value()); // case-insensitive
+
+        // Failure shapes yield NO candles, never garbage.
+        auto hlEmpty = parseHyperliquidCandles(readFile("hl_candles_empty.json"), "HYPE");
+        CHECK(hlEmpty.has_value() && hlEmpty->empty());       // empty array is VALID (caller falls back)
+        CHECK(!parseHyperliquidCandles(readFile("hl_candles_unlisted.json"), "NONSENSEXYZ").has_value()); // body "null" (HTTP 500 live)
+        CHECK(!parseHyperliquidCandles(readFile("hl_candles_error.json"), "HYPE").has_value());            // error object, not an array
+        CHECK(!parseHyperliquidCandles(readFile("hl_candles_missing_fields.json"), "HYPE").has_value());   // candle without "v" poisons the set
+        CHECK(!parseHyperliquidCandles(readFile("garbage.json"), "HYPE").has_value());
+        CHECK(!parseHyperliquidCandles("Failed to deserialize the JSON body into the target type", "HYPE").has_value()); // live 422 body for a bad interval
+        CHECK(!parseHyperliquidCandles(R"([{"t":1793653200000,"s":"HYPE","o":"83.1","c":"84.5","h":"84.6","l":"83.1","v":"soon"}])", "HYPE").has_value()); // non-numeric volume
+        CHECK(!parseHyperliquidCandles(R"([{"t":1793653200000,"s":"HYPE","o":"0","c":"84.5","h":"84.6","l":"83.1","v":"10"}])", "HYPE").has_value());      // a 0 price is not data
+        CHECK(!parseHyperliquidCandles(R"([{"t":1793653200000,"s":"HYPE","o":"83.1","c":"84.5","h":"82.0","l":"83.1","v":"10"}])", "HYPE").has_value());  // high < low is not a candle
+
+        // Range -> interval/span mapping (1d verified live for 30d).
+        CHECK(std::string(hyperliquidIntervalForRange(DetailRange::H24)) == "1h");
+        CHECK(std::string(hyperliquidIntervalForRange(DetailRange::D7)) == "1h");
+        CHECK(std::string(hyperliquidIntervalForRange(DetailRange::D30)) == "1d");
+        CHECK(hyperliquidSpanMsForRange(DetailRange::H24) == 24LL * 3600LL * 1000LL);
+        CHECK(hyperliquidSpanMsForRange(DetailRange::D7) == 7LL * 24LL * 3600LL * 1000LL);
+        CHECK(hyperliquidSpanMsForRange(DetailRange::D30) == 30LL * 24LL * 3600LL * 1000LL);
+
+        // The exact request body the app POSTs, re-parsed.
+        auto reqJson = parseJson(hyperliquidCandleRequestJson("hype", DetailRange::D7, 1793743200000LL));
+        CHECK(reqJson && reqJson->find("type") && reqJson->find("type")->asString() &&
+              *reqJson->find("type")->asString() == "candleSnapshot");
+        const Json* req = reqJson ? reqJson->find("req") : nullptr;
+        CHECK(req && req->find("coin") && req->find("coin")->asString() && *req->find("coin")->asString() == "HYPE"); // uppercased
+        CHECK(req && req->find("interval") && req->find("interval")->asString() && *req->find("interval")->asString() == "1h");
+        CHECK(req && req->find("endTime") && req->find("endTime")->asNumber() &&
+              near(*req->find("endTime")->asNumber(), 1793743200000.0, 1.0));
+        CHECK(req && req->find("startTime") && req->find("startTime")->asNumber() &&
+              near(*req->find("endTime")->asNumber() - *req->find("startTime")->asNumber(),
+                   (double)hyperliquidSpanMsForRange(DetailRange::D7), 1.0));
+        auto req30 = parseJson(hyperliquidCandleRequestJson("HYPE", DetailRange::D30, 1793743200000LL));
+        const Json* req30r = req30 ? req30->find("req") : nullptr;
+        CHECK(req30r && req30r->find("interval") && req30r->find("interval")->asString() &&
+              *req30r->find("interval")->asString() == "1d");
+
+        // Honest wording: Hyperliquid-served ranges never claim closes-only.
+        CHECK(hyperliquidDetailNote(DetailRange::H24).find("Hyperliquid") != std::string::npos);
+        CHECK(hyperliquidDetailNote(DetailRange::H24).find("closes only") == std::string::npos);
+        CHECK(hyperliquidDetailNote(DetailRange::D30).find("1d") != std::string::npos);
+    }
+    // ================= end v0.6.12 Hyperliquid section =================
 
     std::printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

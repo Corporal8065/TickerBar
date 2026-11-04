@@ -256,7 +256,17 @@ private:
     std::vector<std::unique_ptr<QuoteCell>> quoteCells_;
     std::vector<tickerbar::SectionCellDef> sectionDefs_;
     int builtSection_ = -1;      // the section quoteCells_ were built for
-    double titleFlipClock_ = 0.0; // dwell accumulator for the rotator (4 Hz timer)
+    // v0.6.12: the rotator's face + dwell live in the core machine
+    // (single source of truth — v0.6.11 split them across the owner,
+    // the widget and a conjunction of flags, and the face froze in
+    // the field). titlePlaced_ is resized()'s own placement verdict
+    // (the same decision that setVisible()s the cell — never a
+    // re-read of the widget's flag), and the dwell is fed REAL
+    // elapsed time between timer ticks, clamped so a stalled
+    // message thread cannot fast-forward faces on recovery.
+    tickerbar::TitleRotator titleRotator_;
+    bool titlePlaced_ = false;
+    juce::int64 titleLastTickMs_ = 0;
     std::unique_ptr<MascotView> mascot_;
     BarLinkClient linkClient_{ tickerbar::kLinkAppTicker }; // v0.2.0 (k)
     ScreenSpace screenSpace_;

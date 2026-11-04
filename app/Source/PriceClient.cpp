@@ -50,9 +50,19 @@ void PriceClient::requestCandles(const std::string& symbol, tickerbar::DetailRan
     {
         juce::ScopedLock sl(lock);
         RangeKey key{ symbol, range };
-        auto it = detailFetchedMs.find(key);
         const juce::int64 now = juce::Time::currentTimeMillis();
-        if (it != detailFetchedMs.end() && now - it->second < 240000) return; // same ~4 min throttle as the 24h candles
+        // Same ~4 min throttle as the 24h candles, measured from the
+        // last REQUEST or the last successful supply, whichever is
+        // newer. Attempts are tracked separately (detailAttemptMs)
+        // because fetchGecko also stamps detailFetchedMs as a
+        // by-product of the strip poll — that by-product stamp must
+        // not suppress a real detail fetch (v0.6.12: it would have
+        // kept the Hyperliquid upgrade from ever being requested).
+        juce::int64 last = 0;
+        if (auto it = detailAttemptMs.find(key); it != detailAttemptMs.end()) last = it->second;
+        if (auto it = detailFetchedMs.find(key); it != detailFetchedMs.end()) last = std::max(last, it->second);
+        if (last > 0 && now - last < 240000) return;
+        detailAttemptMs[key] = now;
         pendingDetail.insert(key);
     }
     notify(); // wake the poll thread out of its cadence sleep
@@ -61,6 +71,11 @@ std::string PriceClient::detailNote(const std::string& symbol, tickerbar::Detail
     juce::ScopedLock sl(const_cast<juce::CriticalSection&>(lock));
     auto it = detailNotes.find(RangeKey{ symbol, range });
     return it == detailNotes.end() ? std::string{} : it->second;
+}
+std::string PriceClient::detailSourceName(const std::string& symbol, tickerbar::DetailRange range) const {
+    juce::ScopedLock sl(const_cast<juce::CriticalSection&>(lock));
+    auto it = detailSourceNames.find(RangeKey{ symbol, range });
+    return it == detailSourceNames.end() ? std::string{} : it->second;
 }
 std::vector<std::string> PriceClient::tradableSymbols() const {
     juce::ScopedLock sl(const_cast<juce::CriticalSection&>(lock));
@@ -107,6 +122,26 @@ std::optional<std::string> PriceClient::getText(const juce::String& url, int max
     return text.toStdString();
 }
 
+// POST twin of getText (v0.6.12, for Hyperliquid candleSnapshot —
+// that endpoint is POST-only). Same failure contract: transport
+// error, empty or oversized body -> nullopt, caller keeps its last
+// good data. Non-2xx bodies are NOT trusted either way: the
+// Hyperliquid error bodies verified live ("null" for an unlisted
+// coin, plain text for a bad interval) both fail the core parser,
+// so a stream that JUCE hands back for an error status still
+// cannot become candles.
+std::optional<std::string> PriceClient::postText(const juce::String& url, const juce::String& body, int maxBytes) {
+    juce::URL u = juce::URL(url).withPOSTData(body);
+    auto opts = juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
+                    .withConnectionTimeoutMs(10000)
+                    .withExtraHeaders("User-Agent: TickerBar/0.2.0\r\nAccept: application/json\r\nContent-Type: application/json");
+    std::unique_ptr<juce::InputStream> in(u.createInputStream(opts));
+    if (in == nullptr) return std::nullopt;
+    auto text = in->readEntireStreamAsString();
+    if (text.isEmpty() || text.length() > maxBytes) return std::nullopt;
+    return text.toStdString();
+}
+
 bool PriceClient::fetchStats(const std::string& symbol, juce::int64 nowMs) {
     auto text = getText("https://api.exchange.coinbase.com/products/" + juce::String(symbol) + "-USD/stats",
                         64 * 1024);
@@ -133,7 +168,31 @@ bool PriceClient::fetchCandles(const std::string& symbol, juce::int64 nowMs) {
     candleCache[symbol] = *parsed;
     detailCache[RangeKey{ symbol, tickerbar::DetailRange::H24 }] = *parsed;
     detailFetchedMs[RangeKey{ symbol, tickerbar::DetailRange::H24 }] = nowMs;
+    detailSourceNames[RangeKey{ symbol, tickerbar::DetailRange::H24 }] = "Coinbase";
     candleFetchedMs[symbol] = nowMs;
+    return true;
+}
+
+// Hyperliquid drill-in candles (v0.6.12). One candleSnapshot POST
+// for the requested range; ANY failure — transport, HTTP error,
+// unparseable body, an empty set, a coin Hyperliquid does not list
+// (HTTP 500, body "null") — returns false and changes NOTHING
+// stored, so the caller falls back to CoinGecko with its last good
+// data intact. On success the range is stamped Hyperliquid in
+// detailSourceNames and the note switches to the full-OHLC wording.
+bool PriceClient::fetchHyperliquidCandles(const std::string& symbol, tickerbar::DetailRange range,
+                                          juce::int64 nowMs) {
+    const std::string body = tickerbar::hyperliquidCandleRequestJson(symbol, range, nowMs);
+    auto text = postText("https://api.hyperliquid.xyz/info", juce::String(body), 1024 * 1024);
+    if (!text) return false;
+    auto parsed = tickerbar::parseHyperliquidCandles(*text, symbol);
+    if (!parsed || parsed->empty()) return false; // empty = no data: fall back, never draw it
+    juce::ScopedLock sl(lock);
+    RangeKey key{ symbol, range };
+    detailCache[key] = std::move(*parsed);
+    detailFetchedMs[key] = nowMs;
+    detailNotes[key] = tickerbar::hyperliquidDetailNote(range);
+    detailSourceNames[key] = "Hyperliquid";
     return true;
 }
 
@@ -146,12 +205,18 @@ bool PriceClient::fetchCandles(const std::string& symbol, juce::int64 nowMs) {
 //    sparkline of CLOSES ONLY. 24h = its trailing 25 points, 7d = all
 //    of it; 30d is NOT available from this feed and is reported as
 //    such — never backfilled, never fabricated. No OHLC, no volume.
+//  - Hyperliquid (v0.6.12, CoinGecko-routed symbols only): tried
+//    FIRST for every detail range (1h for 24h/7d, 1d for 30d — the
+//    daily interval exists, verified live 2026-11-03, so even 30d
+//    gets real candles). The CoinGecko behaviour above is now the
+//    FALLBACK, reached only when Hyperliquid cannot serve the range.
 bool PriceClient::fetchDetailCandles(const std::string& symbol, tickerbar::DetailRange range,
                                      juce::int64 nowMs) {
     if (tickerbar::sourceForSymbol(symbol) == tickerbar::PriceSource::CoinGecko) {
-        // Served out of the markets payload by fetchGecko; a detail
-        // request just pulls that payload forward.
-        return fetchGecko({ symbol }, nowMs);
+        if (fetchHyperliquidCandles(symbol, range, nowMs)) return true;
+        // Fallback: served out of the markets payload by fetchGecko;
+        // a detail request just pulls that payload forward.
+        return fetchGecko({ symbol }, nowMs, /*detailFallback=*/true);
     }
     const juce::int64 hourMs = 3600LL * 1000LL, dayMs = 24LL * hourMs;
     juce::int64 spanMs = dayMs; int granularity = 3600;
@@ -170,6 +235,7 @@ bool PriceClient::fetchDetailCandles(const std::string& symbol, tickerbar::Detai
     detailCache[key] = std::move(*parsed);
     detailFetchedMs[key] = nowMs;
     detailNotes.erase(key);
+    detailSourceNames[key] = "Coinbase";
     return true;
 }
 
@@ -184,7 +250,7 @@ bool PriceClient::fetchProducts(juce::int64 nowMs) {
     return true;
 }
 
-bool PriceClient::fetchGecko(const std::vector<std::string>& syms, juce::int64 nowMs) {
+bool PriceClient::fetchGecko(const std::vector<std::string>& syms, juce::int64 nowMs, bool detailFallback) {
     juce::String ids;
     for (auto& s : syms) {
         auto id = tickerbar::coinGeckoIdForSymbol(s);
@@ -217,17 +283,37 @@ bool PriceClient::fetchGecko(const std::vector<std::string>& syms, juce::int64 n
                 // 25 hourly closes) and 7d (the whole sparkline).
                 // 30d is beyond this feed — recorded as a note, and
                 // the cache entry stays absent so nothing is drawn.
-                detailCache[RangeKey{ s, tickerbar::DetailRange::H24 }] = candleCache[s];
-                detailFetchedMs[RangeKey{ s, tickerbar::DetailRange::H24 }] = nowMs;
-                detailCache[RangeKey{ s, tickerbar::DetailRange::D7 }] =
-                    tickerbar::candlesFromHourlySeries(q.sparkline7d, nowMs, q.sparkline7d.size());
-                detailFetchedMs[RangeKey{ s, tickerbar::DetailRange::D7 }] = nowMs;
-                detailNotes[RangeKey{ s, tickerbar::DetailRange::D30 }] =
-                    "CoinGecko's free feed carries a 7-day hourly sparkline only - no 30d series. Nothing is backfilled.";
-                detailNotes[RangeKey{ s, tickerbar::DetailRange::H24 }] =
-                    "CoinGecko supplies hourly closes only - no OHLC range, no volume.";
-                detailNotes[RangeKey{ s, tickerbar::DetailRange::D7 }] =
-                    "CoinGecko supplies hourly closes only - no OHLC range, no volume.";
+                // v0.6.12 clobber guard: a range Hyperliquid already
+                // serves keeps its real candles, note and source when
+                // this is the strip poll (detailFallback=false) — the
+                // 60 s strip cadence must not downgrade the drill-in
+                // chart to closes-only ticks. As the explicit detail
+                // FALLBACK (detailFallback=true, Hyperliquid just
+                // failed) this payload honestly replaces the range.
+                auto hlServed = [&](tickerbar::DetailRange r) {
+                    auto it = detailSourceNames.find(RangeKey{ s, r });
+                    return !detailFallback && it != detailSourceNames.end() && it->second == "Hyperliquid";
+                };
+                if (!hlServed(tickerbar::DetailRange::H24)) {
+                    detailCache[RangeKey{ s, tickerbar::DetailRange::H24 }] = candleCache[s];
+                    detailFetchedMs[RangeKey{ s, tickerbar::DetailRange::H24 }] = nowMs;
+                    detailNotes[RangeKey{ s, tickerbar::DetailRange::H24 }] =
+                        "CoinGecko supplies hourly closes only - no OHLC range, no volume.";
+                    detailSourceNames[RangeKey{ s, tickerbar::DetailRange::H24 }] = "CoinGecko";
+                }
+                if (!hlServed(tickerbar::DetailRange::D7)) {
+                    detailCache[RangeKey{ s, tickerbar::DetailRange::D7 }] =
+                        tickerbar::candlesFromHourlySeries(q.sparkline7d, nowMs, q.sparkline7d.size());
+                    detailFetchedMs[RangeKey{ s, tickerbar::DetailRange::D7 }] = nowMs;
+                    detailNotes[RangeKey{ s, tickerbar::DetailRange::D7 }] =
+                        "CoinGecko supplies hourly closes only - no OHLC range, no volume.";
+                    detailSourceNames[RangeKey{ s, tickerbar::DetailRange::D7 }] = "CoinGecko";
+                }
+                if (!hlServed(tickerbar::DetailRange::D30)) {
+                    detailNotes[RangeKey{ s, tickerbar::DetailRange::D30 }] =
+                        "CoinGecko's free feed carries a 7-day hourly sparkline only - no 30d series. Nothing is backfilled.";
+                    detailSourceNames.erase(RangeKey{ s, tickerbar::DetailRange::D30 }); // no candles supplied
+                }
                 found = true;
                 break;
             }

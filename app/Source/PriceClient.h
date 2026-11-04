@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_core/juce_core.h>
 #include <juce_events/juce_events.h>
+#include <tickerbar/HyperliquidParse.hpp>
 #include <tickerbar/MarketParse.hpp>
 #include <tickerbar/Stale.hpp>
 #include <functional>
@@ -17,6 +18,12 @@
 //  - CoinGecko /coins/markets for CoinGecko-routed symbols (HYPE) on a
 //    ~60 s cadence (free-tier limits); a 429 or failure is absorbed as
 //    staleness for those symbols only — it never touches Coinbase data.
+//  - Hyperliquid candleSnapshot (v0.6.12, DRILL-IN CANDLES ONLY):
+//    for CoinGecko-routed symbols the detail ranges try Hyperliquid
+//    first (full OHLCV: 1h for 24h/7d, 1d for 30d) and fall back to
+//    the CoinGecko closes-only path on any failure. Strip prices are
+//    NOT served by Hyperliquid — see HyperliquidParse.hpp for why
+//    and for the verified wire/failure shapes.
 // Failure honesty (unchanged rules from v0.1): a failed or unparseable
 // response changes NOTHING stored; per-symbol success timestamps drive
 // the core-tested tickerbar::feedStatus for each cell; the failure
@@ -42,6 +49,14 @@ public:
     std::vector<tickerbar::Candle> candlesFor(const std::string& symbol, tickerbar::DetailRange range) const;
     void requestCandles(const std::string& symbol, tickerbar::DetailRange range); // message thread: queue a fetch, wake the poller
     std::string detailNote(const std::string& symbol, tickerbar::DetailRange range) const;
+    std::string detailSourceName(const std::string& symbol, tickerbar::DetailRange range) const;
+    // ^ v0.6.12: which feed actually supplied the cached detail candles
+    // for a symbol/range — "Hyperliquid", "CoinGecko" or "Coinbase";
+    // "" when no feed has supplied candles for that range yet (e.g.
+    // CoinGecko-routed 30d on the fallback path supplies none). The
+    // detail card labels its chart from this, never from the strip
+    // routing: a CoinGecko-priced symbol can carry Hyperliquid
+    // candles, and after a fallback it carries CoinGecko closes.
     // Watchlist validation universe: Coinbase SYM-USD bases + the
     // CoinGecko-routed symbols (HYPE). Empty until /products lands —
     // Settings shows its "coin list hasn't loaded yet" message then.
@@ -54,11 +69,17 @@ public:
     void run() override;
 private:
     std::optional<std::string> getText(const juce::String& url, int maxBytes);
+    std::optional<std::string> postText(const juce::String& url, const juce::String& body, int maxBytes);
     bool fetchStats(const std::string& symbol, juce::int64 nowMs);
     bool fetchCandles(const std::string& symbol, juce::int64 nowMs);
     bool fetchDetailCandles(const std::string& symbol, tickerbar::DetailRange range, juce::int64 nowMs);
+    bool fetchHyperliquidCandles(const std::string& symbol, tickerbar::DetailRange range, juce::int64 nowMs);
     bool fetchProducts(juce::int64 nowMs);
-    bool fetchGecko(const std::vector<std::string>& syms, juce::int64 nowMs);
+    // detailFallback=true only from fetchDetailCandles after a
+    // Hyperliquid miss: the CoinGecko result then REPLACES any older
+    // Hyperliquid detail entry. The strip poll (false) must not
+    // clobber Hyperliquid-served detail ranges with sparkline closes.
+    bool fetchGecko(const std::vector<std::string>& syms, juce::int64 nowMs, bool detailFallback = false);
 
     juce::CriticalSection lock;
     std::map<std::string, tickerbar::AssetCtx> bySymbol;
@@ -72,7 +93,9 @@ private:
     };
     std::map<RangeKey, std::vector<tickerbar::Candle>> detailCache;
     std::map<RangeKey, juce::int64> detailFetchedMs;
+    std::map<RangeKey, juce::int64> detailAttemptMs; // last requestCandles queue time per range (throttle)
     std::map<RangeKey, std::string> detailNotes;
+    std::map<RangeKey, std::string> detailSourceNames; // feed that supplied detailCache[key]
     std::set<RangeKey> pendingDetail;
     std::map<std::string, juce::int64> symbolOkMs;
     std::vector<std::string> products; // sorted Coinbase USD bases
