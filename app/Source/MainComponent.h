@@ -20,6 +20,7 @@
 #include "ContextClient.h"
 #include "SectionClient.h" // v0.6.11: rotation-section poller
 #include <tickerbar/Sections.hpp> // v0.6.11: section tables + cell defs
+#include <tickerbar/Layout.hpp> // v0.6.12: TitleRotator (member below) — the .cpp had it, the header did not
 #include "ScreenSpace.h"
 #include "ClickPlayer.h"
 #include "ClickSounds.h"
