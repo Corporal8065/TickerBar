@@ -197,6 +197,8 @@ public:
     void doStackAll();                  // v0.3.0 item 12: one-click stack of the linked family
     void doLinkAll(int edgeOrdinal);    // v0.6.13 (DESIGN §6): one click links all three bars, MeterBar parent, stacked at Top (0) / Bottom (1)
     void openLogFolder();               // v0.6.13: Documents\\TickerBar (crash records) in Explorer — menu + Settings About
+    void exportSettingsInteractive();   // v0.6.16: full setup (settings + preset library) to one user-chosen file — menu + Settings About
+    void importSettingsInteractive();   // v0.6.16: validated whole-file import, applied live; refusals show the reason
     // v0.6.13: the cells' linked-pulse envelope (DESIGN §7) — driven
     // ONLY from MeterBar's real link packet (audio envelope + BLK7
     // pulse events), through core CellPulse. Zero when unlinked.
@@ -250,6 +252,7 @@ private:
     void doMoveToDisplay(int idx);
     void savePresetInteractive(bool saveAs);
     void loadPresetFile(const juce::File& f);
+    void showInfoBox(const juce::String& title, const juce::String& text, bool warning = false); // v0.6.16: one-button async message (preset/import/export results)
     void applyWindowRectFromState(); // preset/startup position apply, clamped on-screen (core WindowGeom)
     // animated backgrounds (v0.3.0 items 7/17) + mascot (item 18)
     void stepFx();
@@ -351,6 +354,7 @@ private:
     tickerbar::FeedStatus feed_ = tickerbar::FeedStatus::Down;
     bool vertical_ = false;
     juce::String lastPresetName_;
+    std::unique_ptr<juce::FileChooser> fileChooser_; // v0.6.16: keeps the async export/import chooser alive until it answers
     // reorder gesture state
     juce::Component* dragCell_ = nullptr;
     juce::Rectangle<int> dragCellStartBounds_;

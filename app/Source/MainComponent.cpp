@@ -7,6 +7,7 @@
 #include <BinaryData.h>
 #include "SettingsStore.h"
 #include "PresetIO.h"
+#include "TransferIO.h" // v0.6.16: settings export/import
 #include "SettingsPalette.h"
 #if JUCE_WINDOWS
  #include <windows.h> // native rects for the AppBar sync (physical pixels)
@@ -1265,6 +1266,10 @@ public:
                       []{ juce::URL("https://github.com/Corporal8065/TickerBar").launchInDefaultBrowser(); });
             button("Open Log Folder", [this]{ owner->openLogFolder(); }); // v0.6.13: crash records live in Documents\\TickerBar
             note("Crash records: if TickerBar ever hard-crashes it leaves a crash-*.txt + .dmp in Documents\\TickerBar - send both to Milo.");
+            buttonRow("Export Settings...", "Import Settings...",
+                      [this]{ owner->exportSettingsInteractive(); },
+                      [this]{ owner->importSettingsInteractive(); }); // v0.6.16
+            note("Saving: Presets (in the bar's Menu) save a whole setup under a name on this PC. Export writes the full setup - settings plus every preset - to one file you choose, for a backup or another PC; Import reads such a file back and applies it live. A file from a newer TickerBar, or another app's file, is refused whole, with the reason - never half-applied. Importing keeps this PC's window position.");
             note("TickerBar " + kVersion + " - prices are SPOT prices: Coinbase Exchange public API for Coinbase-listed coins, CoinGecko for HYPE. No account, no keys, read-only.");
             note("Detail chart: candlesticks + volume with 24h / 7d / 30d ranges. Coinbase caps one candles request at 300: 24h/7d are hourly, 30d is daily. CoinGecko (HYPE) supplies hourly closes only - no OHLC, no volume, no 30d - and the chart note says so.");
             note("Polls every N seconds (Window panel). If the feed drops, cells grey out and keep the last real prices, marked STALE - never fake-fresh numbers.");
@@ -2943,7 +2948,8 @@ enum { mnArrange = 1, mnRestore, mnStack, mnMinimize, mnQuit, mnCheckUpdates,
        mnPresetNew = 10, mnPresetSave, mnPresetSaveAs, mnPresetFolder, mnPresetLoadBase = 1000,
        mnEdgeTop = 20, mnEdgeBottom, mnEdgeLeft, mnEdgeRight, mnPin, mnReserve, mnDisplayBase = 2000,
        mnSectionBase = 3000, // v0.6.11: + RotationSection ordinal
-       mnOpenLogFolder = 4000, mnLinkAllTop = 4001, mnLinkAllBottom = 4002 }; // v0.6.13
+       mnOpenLogFolder = 4000, mnLinkAllTop = 4001, mnLinkAllBottom = 4002, // v0.6.13
+       mnExportSettings = 4003, mnImportSettings = 4004 }; // v0.6.16: saving — export/import
 juce::PopupMenu MainComponent::buildRepositionSubMenu() {
     juce::PopupMenu m;
     const int edge = (int)state.dockEdge;
@@ -3009,6 +3015,8 @@ void MainComponent::showMainMenu() {
     m.addSeparator();
     m.addItem(mnCheckUpdates, "Check for updates");
     m.addItem(mnOpenLogFolder, "Open Log Folder"); // v0.6.13: crash records, reachable outside Settings
+    m.addItem(mnExportSettings, "Export Settings..."); // v0.6.16: saving — the full setup incl. presets, one file
+    m.addItem(mnImportSettings, "Import Settings..."); // v0.6.16: validated whole-file import
     m.addItem(mnMinimize, "Minimize");
     m.addItem(mnQuit, "Quit");
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(burgerBtn_), [this, presetFiles](int r) {
@@ -3030,6 +3038,8 @@ void MainComponent::showMainMenu() {
         else if (r == mnRestore) doRestore();
         else if (r == mnCheckUpdates) checkForUpdates();
         else if (r == mnOpenLogFolder) openLogFolder();
+        else if (r == mnExportSettings) exportSettingsInteractive();
+        else if (r == mnImportSettings) importSettingsInteractive();
         else if (r == mnLinkAllTop || r == mnLinkAllBottom) {
             // Deferred like Stack: stamping from inside the popup
             // callback can move windows while the menu is closing.
@@ -3084,8 +3094,15 @@ void MainComponent::savePresetInteractive(bool saveAs) {
 }
 void MainComponent::loadPresetFile(const juce::File& f) {
     tickerbar::TickerState loaded;
-    juce::String name;
-    if (!presetio::load(f, loaded, name)) return;
+    juce::String name, reason;
+    if (!presetio::load(f, loaded, name, reason)) {
+        // v0.6.16: a refused preset says why (the common case is a
+        // preset stamped by a newer build) instead of failing
+        // silently — and nothing was applied.
+        showInfoBox("Preset Not Loaded",
+                    "TickerBar did not load \"" + f.getFileNameWithoutExtension() + "\": " + reason + ".", true);
+        return;
+    }
     state = loaded;
     lastPresetName_ = name;
     const auto rect = juce::Rectangle<int>(state.windowX, state.windowY, state.windowW, state.windowH);
@@ -3096,6 +3113,82 @@ void MainComponent::loadPresetFile(const juce::File& f) {
     saveSettings();
     uiClick(ClickSounds::Which::Sparkle);
 }
+// =====================================================================
+// v0.6.16: saving — export / import (the second half of Jackson's
+// "both" pick). Presets above are per-PC named setups; these move
+// the WHOLE setup — settings + the preset library — as one file.
+// =====================================================================
+void MainComponent::showInfoBox(const juce::String& title, const juce::String& text, bool warning) {
+    auto w = std::make_shared<juce::AlertWindow>(title, text,
+        warning ? juce::AlertWindow::WarningIcon : juce::AlertWindow::InfoIcon);
+    w->addButton("OK", 1);
+    w->enterModalState(true, juce::ModalCallbackFunction::create([w](int){}));
+}
+void MainComponent::exportSettingsInteractive() {
+    saveSettings(); // refresh the live window rect into state first, as a preset save does
+    fileChooser_ = std::make_unique<juce::FileChooser>("Export TickerBar Settings",
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+            .getChildFile("TickerBar-settings.json"),
+        "*.json");
+    const int flags = juce::FileBrowserComponent::saveMode
+                    | juce::FileBrowserComponent::canSelectFiles
+                    | juce::FileBrowserComponent::warnAboutOverwriting;
+    fileChooser_->launchAsync(flags, [this](const juce::FileChooser& fc) {
+        auto dest = fc.getResult();
+        fileChooser_.reset();
+        if (dest == juce::File()) return; // cancelled: nothing happened, nothing to say
+        int presetCount = 0;
+        if (transferio::exportToFile(state, dest, presetCount)) {
+            showInfoBox("Settings Exported",
+                "Your full TickerBar setup was written to " + dest.getFileName() +
+                " — settings plus " + juce::String(presetCount) +
+                (presetCount == 1 ? " preset." : " presets."));
+        } else {
+            showInfoBox("Export Failed",
+                "TickerBar could not write " + dest.getFullPathName() + ".", true);
+        }
+    });
+}
+void MainComponent::importSettingsInteractive() {
+    fileChooser_ = std::make_unique<juce::FileChooser>("Import TickerBar Settings",
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory), "*.json");
+    const int flags = juce::FileBrowserComponent::openMode
+                    | juce::FileBrowserComponent::canSelectFiles;
+    fileChooser_->launchAsync(flags, [this](const juce::FileChooser& fc) {
+        auto src = fc.getResult();
+        fileChooser_.reset();
+        if (src == juce::File()) return; // cancelled
+        auto res = transferio::importFromFile(src);
+        if (!res.ok) {
+            showInfoBox("Import Refused",
+                "Nothing was changed. " + res.reason + ".", true);
+            return;
+        }
+        // Apply live through the same path a preset load uses —
+        // except the window rect: an export's rect describes the
+        // machine it came from, so this PC keeps its own, and the
+        // uiVer marker is this install's schema state, not
+        // portable setup. Everything else applies as exported.
+        const auto rect = currentWindowBounds();
+        state = res.state;
+        if (!rect.isEmpty()) {
+            state.windowX = rect.getX(); state.windowY = rect.getY();
+            state.windowW = rect.getWidth(); state.windowH = rect.getHeight();
+        }
+        state.uiVer = tickerbar::TickerState{}.uiVer;
+        lastPresetName_.clear(); // the live setup is no longer the named preset's
+        settingsChanged(true);   // applies + persists; its sheet rebuild shows the imported values
+        uiClick(ClickSounds::Which::Sparkle);
+        showInfoBox("Settings Imported",
+            "Settings from " + src.getFileName() + " are live." +
+            (res.presetsWritten > 0
+                ? " " + juce::String(res.presetsWritten) +
+                  (res.presetsWritten == 1 ? " preset was" : " presets were") +
+                  " added to the Presets menu."
+                : ""));
+    });
+}
+
 void MainComponent::applyWindowRectFromState() {
     auto* w = findParentComponentOfClass<juce::DocumentWindow>();
     if (!w) return;

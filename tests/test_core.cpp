@@ -23,6 +23,7 @@
 #include <tickerbar/BarLink.hpp>
 #include <tickerbar/CellPulse.hpp> // v0.6.13: ported from SessionBar v0.4.16 + BLK7 fire()
 #include <tickerbar/CrashWatch.hpp> // v0.6.13: crash-record naming/notice logic
+#include <tickerbar/Saving.hpp> // v0.6.16: preset/export document validation
 #include <tickerbar/SemVer.hpp>
 #include <tickerbar/ReleaseParse.hpp>
 #include <tickerbar/WindowGeom.hpp>
@@ -2183,6 +2184,96 @@ int main() {
     auto recEmpty = crashRecordText("0.6.13", "10.0 build 26200", "2026-11-03_114806", 0ul, "0x0", "");
     CHECK(recEmpty.find("(none recorded)") != std::string::npos);
 }
+    // ---------- v0.6.16: Saving — preset/export document validation ----------
+    {
+        // The canonical preset document, exactly the shape the app
+        // writes (settings mapping + name + the v0.6.16 stamps).
+        const std::string presetText = R"({"watchlist":["BTC","ETH","HYPE"],"theme":"Midnight Kids","bgStyle":1,"bgOpacity":0.9,"rotationSection":3,"pollSec":20,"cellWidths":{"BTC":140},"name":"Desk","app":"TickerBar","presetSchema":1,"savedByVer":"0.6.16"})";
+        auto preset = parseJson(presetText);
+        CHECK(preset && preset->isObject());
+        CHECK(preset && checkPresetDocument(*preset).ok);
+        // Round-trip: the written document's fields read back whole.
+        CHECK(preset && preset->find("name") && *preset->find("name")->asString() == "Desk");
+        CHECK(preset && preset->find("rotationSection") && *preset->find("rotationSection")->asNumber() == 3);
+        CHECK(preset && preset->find("presetSchema") && *preset->find("presetSchema")->asNumber() == kPresetSchema);
+        // A pre-stamp preset (v0.3.0–v0.6.15 shape: no envelope
+        // keys at all) stays loadable — schema 0, appended-keys rule.
+        auto legacy = parseJson(R"({"watchlist":["BTC"],"theme":"Midnight Kids","name":"Old Faithful"})");
+        CHECK(legacy && checkPresetDocument(*legacy).ok);
+        // A newer build's preset refuses WHOLE, saying why.
+        auto newer = parseJson(R"({"watchlist":["BTC"],"name":"Future","presetSchema":99})");
+        CHECK(newer && !checkPresetDocument(*newer).ok);
+        CHECK(newer && checkPresetDocument(*newer).reason.find("newer") != std::string::npos);
+        // Malformed stamp: refused, never guessed.
+        auto badStamp = parseJson(R"({"watchlist":["BTC"],"presetSchema":"one"})");
+        CHECK(badStamp && !checkPresetDocument(*badStamp).ok);
+        // Not an object / empty / foreign: refused.
+        auto arr = parseJson(R"([1,2,3])");
+        CHECK(arr && !checkPresetDocument(*arr).ok);
+        auto empty = parseJson(R"({})");
+        CHECK(empty && !checkPresetDocument(*empty).ok);
+        auto foreign = parseJson(R"({"watchlist":["BTC"],"name":"Meter's","app":"MeterBar"})");
+        CHECK(foreign && !checkPresetDocument(*foreign).ok);
+        // Malformed JSON text: the caller-side refusal contract
+        // (parse fails -> nothing is applied).
+        CHECK(!parseJson("{\"watchlist\": [").has_value());
+
+        // The canonical export: settings + envelope + preset library.
+        const std::string exportText = R"({"watchlist":["BTC","ETH"],"theme":"Midnight Kids","rotationSection":1,"app":"TickerBar","exportSchema":1,"savedByVer":"0.6.16","presets":[{"watchlist":["BTC"],"name":"Desk","presetSchema":1},{"watchlist":["ETH"],"name":"Old Faithful"}]})";
+        auto exp = parseJson(exportText);
+        CHECK(exp && checkImportDocument(*exp).ok);
+        // Every embedded preset individually passes the preset rules.
+        CHECK(exp && exp->find("presets") && exp->find("presets")->array.size() == 2);
+        if (exp && exp->find("presets"))
+            for (auto& p : exp->find("presets")->array) CHECK(checkPresetDocument(p).ok);
+        // A raw settings.json (no envelope) imports via the
+        // watchlist tell — the app's own file copied by hand.
+        auto raw = parseJson(R"({"watchlist":["BTC","ETH","HYPE"],"theme":"Midnight Kids","pollSec":30,"uiVer":3})");
+        CHECK(raw && checkImportDocument(*raw).ok);
+        // Foreign files refuse: a random object, and a sibling-app
+        // shaped object (shared key names, no marker, no watchlist).
+        auto random = parseJson(R"({"foo":1,"bar":"baz"})");
+        CHECK(random && !checkImportDocument(*random).ok);
+        auto sibling = parseJson(R"({"theme":"Midnight Kids","bgStyle":1,"winX":10,"specEn":true,"name":"Meter Look"})");
+        CHECK(sibling && !checkImportDocument(*sibling).ok);
+        auto wrongApp = parseJson(R"({"watchlist":["BTC"],"app":"SessionBar","exportSchema":1})");
+        CHECK(wrongApp && !checkImportDocument(*wrongApp).ok);
+        // Newer export schema refuses whole, saying why.
+        auto newerExp = parseJson(R"({"watchlist":["BTC"],"app":"TickerBar","exportSchema":99})");
+        CHECK(newerExp && !checkImportDocument(*newerExp).ok);
+        CHECK(newerExp && checkImportDocument(*newerExp).reason.find("newer") != std::string::npos);
+        // An envelope with no settings in it is not an export.
+        auto hollow = parseJson(R"({"app":"TickerBar","exportSchema":1,"presets":[]})");
+        CHECK(hollow && !checkImportDocument(*hollow).ok);
+        // A bad embedded preset poisons the WHOLE file — never a
+        // partial import that silently drops it.
+        auto poisoned = parseJson(R"({"watchlist":["BTC"],"app":"TickerBar","exportSchema":1,"presets":[{"watchlist":["BTC"],"name":"Future","presetSchema":99}]})");
+        CHECK(poisoned && !checkImportDocument(*poisoned).ok);
+        CHECK(poisoned && checkImportDocument(*poisoned).reason.find("preset 1") != std::string::npos);
+        auto presetsNotList = parseJson(R"({"watchlist":["BTC"],"app":"TickerBar","exportSchema":1,"presets":{"name":"Desk"}})");
+        CHECK(presetsNotList && !checkImportDocument(*presetsNotList).ok);
+
+        // v0.6.15's customStocks field rides the preset/export
+        // mapping (SettingsStore toVar/fromVar carry it; presets and
+        // exports are written through that same mapping, so the
+        // documents below are the shapes the app actually writes).
+        // The validators accept the documents and the field reads
+        // back whole — the saving layer never drops it.
+        auto csPreset = parseJson(R"({"watchlist":["BTC"],"customStocks":["PLTR","NVDA"],"name":"Mine","presetSchema":1})");
+        CHECK(csPreset && checkPresetDocument(*csPreset).ok);
+        CHECK(csPreset && csPreset->find("customStocks") && csPreset->find("customStocks")->array.size() == 2);
+        CHECK(csPreset && csPreset->find("customStocks") &&
+              *csPreset->find("customStocks")->array[0].asString() == "PLTR");
+        // customStocks alone (plus the name) is settings evidence:
+        // the key joined the known-settings set with v0.6.15.
+        auto csOnly = parseJson(R"({"customStocks":["PLTR"],"name":"Just Mine"})");
+        CHECK(csOnly && checkPresetDocument(*csOnly).ok);
+        auto csExport = parseJson(R"({"watchlist":["BTC"],"customStocks":["PLTR","NVDA"],"app":"TickerBar","exportSchema":1,"presets":[{"watchlist":["BTC"],"customStocks":["PLTR"],"name":"Mine","presetSchema":1}]})");
+        CHECK(csExport && checkImportDocument(*csExport).ok);
+        CHECK(csExport && csExport->find("customStocks") && csExport->find("customStocks")->array.size() == 2);
+        CHECK(csExport && csExport->find("presets") &&
+              checkPresetDocument(csExport->find("presets")->array[0]).ok);
+    }
     std::printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
