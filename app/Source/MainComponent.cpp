@@ -1252,8 +1252,9 @@ public:
                   [&](int v){ st->pollSec = v == 0 ? 10 : v == 1 ? 20 : v == 2 ? 30 : 60; });
             buttonRow("Arrange windows clear of the bar", "Restore arranged windows",
                       [this]{ owner->doArrange(); }, [this]{ owner->doRestore(); });
-            button("Stack all linked bars as one block", [this]{ owner->doStackAll(); });
-            note("Stack is the one-click form of Link + Dock: it turns Link on, snaps this bar to its dock edge, and every other linked bar lines up flush against it. The Stack button on the bar does the same.");
+            buttonRow(juce::String::fromUTF8("Link All \xe2\x86\x92 Top"), juce::String::fromUTF8("Link All \xe2\x86\x92 Bottom"),
+                      [this]{ owner->doLinkAll(0); }, [this]{ owner->doLinkAll(1); });
+            note("Link All gathers every running family bar (TickerBar, MeterBar, SessionBar) into one stack flush at the chosen edge of this bar's screen — every bar takes the full width and lines up with no gaps, and any bar whose Link is off is linked in. Same action as the Menu's Link All submenu. (v0.6.17: these buttons replace the old Stack button — Stack anchored the pile at this bar's own dock edge and silently left out any bar that was not already linked.)");
             note("Arrange slides every other (non-maximised) window on the bar's monitor clear of the bar; Restore puts them back. Screen space: " + owner->screenSpaceStatus());
         });
         panel("Reset", [&]{
@@ -2869,28 +2870,26 @@ juce::Colour MainComponent::gainColour(bool up) const {
 }
 
 // =====================================================================
-// v0.3.0 item 12: one-click stack. Link on (if it wasn't), snap to
-// the dock edge, then stamp the request into the shared block; the
-// other bars' clients run the core planner and move themselves.
+// v0.6.17: the v0.3.0 one-click Stack (doStackAll) is REMOVED. It
+// anchored the pile at this bar's own dock edge — SessionBar
+// bottom-docked stacked the family upward from the bottom of the
+// screen — and planStackAll silently excluded any bar not already
+// linked+live (Jackson's field report, 2026-11-12: TickerBar left
+// at the top of the screen, pile mid-screen). Link All below is
+// the one gather now; the core planner/request stay in the
+// protocol but no UI surface reaches them.
 // =====================================================================
-void MainComponent::doStackAll() {
-    if (!state.linkEnabled) {
-        state.linkEnabled = true;
-        linkBtn_.setToggleState(true, juce::dontSendNotification);
-        saveSettings();
-    }
-    snapToDockEdge();
-    linkClient_.requestStackAll((int)state.dockEdge, currentWindowBounds());
-}
 
 // =====================================================================
 // v0.6.13 (DESIGN §6): LINK ALL — one click links all three bars
 // and stacks them MeterBar -> TickerBar -> SessionBar at the top
 // or bottom edge, all at the same full width, MeterBar as link
 // parent. This host only stamps the request (§6a): the area is the
-// bounds (user area) of the display containing MeterBar's current
-// slot rect when MeterBar's slot is live, else the display this
-// bar is on. Every client (incl. this one) consumes it on its tick.
+// TOTAL area of the display containing THIS bar's window — the
+// same invoker rule in all three bars since v0.6.17, so the gather
+// anchors identically no matter which bar invokes it (before: the
+// user area of MeterBar's display). Every client (incl. this one)
+// consumes it on its tick.
 // Menu surface (DESIGN §6e as amended by Jackson 2026-11-03
 // ~14:03 PT): option B ONLY — "Link All → Top" / "Link All →
 // Bottom"; no auto-edge (MeterBar's edge) item.
@@ -2898,14 +2897,8 @@ void MainComponent::doStackAll() {
 void MainComponent::doLinkAll(int edgeOrdinal) {
     if (edgeOrdinal != 0 && edgeOrdinal != 1) return;
     juce::Rectangle<int> area;
-    juce::Rectangle<int> meterRect;
-    auto& displays = juce::Desktop::getInstance().getDisplays();
-    if (linkClient_.peerSlotRect(tickerbar::kLinkAppMeter, meterRect)) {
-        area = displays.getDisplayContaining(meterRect.getCentre()).userArea;
-    } else {
-        auto b = currentWindowBounds();
-        area = displays.getDisplayContaining(b.getCentre()).userArea;
-    }
+    if (auto* d = juce::Desktop::getInstance().getDisplays().getDisplayForRect(currentWindowBounds()))
+        area = d->totalArea;
     if (area.isEmpty()) return;
     linkClient_.requestLinkAll(edgeOrdinal, area);
 }
@@ -2994,7 +2987,10 @@ void MainComponent::showMainMenu() {
     m.addSubMenu("Presets", buildPresetSubMenu(presetFiles));
     m.addItem(mnArrange, "Arrange Windows");
     m.addItem(mnRestore, "Restore Windows");
-    m.addItem(mnStack, "Stack Linked Bars");
+    // v0.6.17: the legacy "Stack Linked Bars" item is GONE — it ran
+    // the initiator-anchored stack (pile grew from this bar's own
+    // dock edge; unlinked bars silently left behind). The Link All
+    // submenu below is the one gather now.
     // v0.6.13 (DESIGN §6e, option B per Jackson 2026-11-03): the
     // Link All submenu — exactly two items.
     {
@@ -3049,8 +3045,8 @@ void MainComponent::showMainMenu() {
         else if (r == mnMinimize) { if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
                                         if (auto* peer = w->getPeer()) peer->setMinimised(true); }
         else if (r == mnQuit) juce::JUCEApplication::getInstance()->systemRequestedQuit();
-        else if (r == mnStack || (r >= mnEdgeTop && r <= mnReserve) || r >= mnDisplayBase) {
-            // Stack + every Reposition action defer until the popup
+        else if ((r >= mnEdgeTop && r <= mnReserve) || r >= mnDisplayBase) {
+            // Every Reposition action defers until the popup
             // has fully closed — the old dropdown's discipline.
             juce::MessageManager::callAsync([this, r] {
                 if (r >= mnDisplayBase) { doMoveToDisplay(r - mnDisplayBase); return; }
@@ -3069,9 +3065,6 @@ void MainComponent::showMainMenu() {
                         state.reserveScreenSpace = !state.reserveScreenSpace;
                         saveSettings();
                         syncScreenSpace();
-                        break;
-                    case mnStack:
-                        doStackAll();
                         break;
                     default: break;
                 }

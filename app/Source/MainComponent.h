@@ -194,7 +194,7 @@ public:
     void snapToDockEdge();
     void doArrange();
     void doRestore();
-    void doStackAll();                  // v0.3.0 item 12: one-click stack of the linked family
+    // v0.6.17: doStackAll removed — Link All (doLinkAll) is the one gather
     void doLinkAll(int edgeOrdinal);    // v0.6.13 (DESIGN §6): one click links all three bars, MeterBar parent, stacked at Top (0) / Bottom (1)
     void openLogFolder();               // v0.6.13: Documents\\TickerBar (crash records) in Explorer — menu + Settings About
     void exportSettingsInteractive();   // v0.6.16: full setup (settings + preset library) to one user-chosen file — menu + Settings About
