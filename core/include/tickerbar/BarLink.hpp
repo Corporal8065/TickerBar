@@ -491,6 +491,40 @@ inline bool groupDockMovesSelf(const LinkShared& sh, int selfApp, unsigned selfL
     return bgParentApp(sh, selfApp, selfLinkSeq, nowMs) != selfApp;
 }
 
+// v0.6.18 GROUP-DOCK LEADER (round-4 port of MeterBar's v0.28.14
+// round-3 fix — the two-leader ping-pong): the pre-fix client iterated
+// EVERY reserve-docked linked peer in one tick and re-applied each
+// one's groupDockRect target whenever its key differed from the
+// client's SINGLE stored dockKey_. With two docked peers the key can
+// never match both at once: leader A's key differs from the stored B
+// key, then B's differs from the just-stored A key, so the follower
+// was teleported between the two targets every tick, forever, with no
+// further input (sim-reproduced with the real client headers: 883
+// applies in 30 idle seconds; field shape: the sustained post-resize
+// oscillation of 2026-11-12, which SURVIVED MeterBar v0.28.14 because
+// the loop lives in the FOLLOWER's client and this bar's was unpatched
+// — round 4 convicted it in the mixed install, MeterBar fixed + this
+// client unfixed). The follower therefore docks against exactly ONE
+// leader: the senior docked peer — smallest linkSeq (the group
+// parent, when the parent is the docked one; unclaimed linkSeq 0
+// sorts last; ties break by slot order). The choice is a pure
+// function of the snapshot: it can change only when dock/claim/
+// liveness state itself changes, never per tick, so the client's
+// dockKey_ converges after at most one apply per change. Returns the
+// leader's SLOT index (slots are appId-indexed), or -1 when no live
+// linked peer is reserve-docked.
+inline int groupDockLeaderSlot(const LinkShared& sh, int selfApp, long long nowMs) {
+    int best = -1;
+    unsigned bestSeq = 0;
+    for (int i = 0; i < 3; ++i) {
+        const LinkSlot& s = sh.slots[(size_t)i];
+        if (s.appId < 0 || s.appId == selfApp || !s.linked || s.dockedEdge < 0 || !slotLive(s, nowMs)) continue;
+        const unsigned seq = s.linkSeq != 0 ? s.linkSeq : ~0u; // unclaimed sorts last
+        if (best < 0 || seq < bestSeq) { best = i; bestSeq = seq; }
+    }
+    return best;
+}
+
 // BLK7 LINK ALL PLANNER (DESIGN §6c): participants are the slots
 // that are slotLive (a bar that is not running cannot be stacked;
 // a running-but-unlinked bar IS included — its client links it in

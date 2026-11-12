@@ -468,16 +468,33 @@ private:
         // joining docked no longer drags its parent across the
         // screen, and a floating parent is never sucked to a docked
         // follower. Followers still stack against a docked parent.
-        if (tickerbar::groupDockFollows(mine.dockedEdge) && tickerbar::groupDockMovesSelf(snap, appId_, myLinkSeq_, now)) {
-        for (auto& s : snap.slots) {
-            if (s.appId < 0 || s.appId == appId_ || !s.linked || s.dockedEdge < 0 || !tickerbar::slotLive(s, now)) continue;
-            auto target = tickerbar::groupDockRect(s.rect, mine.rect, (tickerbar::DockArg)s.dockedEdge);
-            const auto key = std::make_tuple(s.appId, s.dockedEdge, s.rect.x, s.rect.y, s.rect.w, s.rect.h);
-            if (key != dockKey_) {
-                dockKey_ = key;
-                if (!sameRect(target, mine.rect)) applyRemote(target);
+        // v0.6.18 (round-4 port of MeterBar's v0.28.14 round-3 fix):
+        // dock against exactly ONE leader — the senior docked peer
+        // (core groupDockLeaderSlot). The pre-fix loop visited every
+        // docked peer per tick and compared each one's key against
+        // the single dockKey_: with two leaders the key can never
+        // match both, so this bar was teleported between the leaders'
+        // targets every tick, forever (the sustained post-resize
+        // oscillation of 2026-11-12, which persisted after MeterBar
+        // v0.28.14 because the loop lives in the FOLLOWER's client).
+        // One leader means the key converges after at most one apply
+        // per leader change. Also: never apply while THIS bar's own
+        // drag session is live — the user's hand owns the bar
+        // mid-gesture; the section settles it once the gesture ends
+        // instead of tugging against the drag.
+        if (tickerbar::groupDockFollows(mine.dockedEdge)
+            && !tickerbar::dragLive(mine, now)
+            && tickerbar::groupDockMovesSelf(snap, appId_, myLinkSeq_, now)) {
+            const int li = tickerbar::groupDockLeaderSlot(snap, appId_, now);
+            if (li >= 0) {
+                const auto& s = snap.slots[(size_t)li];
+                auto target = tickerbar::groupDockRect(s.rect, mine.rect, (tickerbar::DockArg)s.dockedEdge);
+                const auto key = std::make_tuple(s.appId, s.dockedEdge, s.rect.x, s.rect.y, s.rect.w, s.rect.h);
+                if (key != dockKey_) {
+                    dockKey_ = key;
+                    if (!sameRect(target, mine.rect)) applyRemote(target);
+                }
             }
-        }
         }
     }
 
